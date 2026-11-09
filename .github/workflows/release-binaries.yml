@@ -10,6 +10,8 @@ on:
   push:
     branches:
       - nx2-experimental
+      - custom-30fps-hybrid
+      - main
     # A binary only changes when build inputs change; docs-only pushes skip the build.
     paths:
       - "src/**"
