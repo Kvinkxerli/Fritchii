@@ -437,6 +437,9 @@ jobs:
             }
           }
           & "$env:QT_ROOT_DIR\bin\windeployqt.exe" --release --no-translations build/release/bin/lichii.exe
+          $zipName = "lichii-${{ matrix.platform }}.zip"
+          Compress-Archive -Path "build/release/bin/*" -DestinationPath $zipName -Force
+          Write-Host "Created $zipName successfully"
 
       # A dynamic MinGW build is not portable on its own: windeployqt6 brings the Qt libraries and
       # plugins, then every non-system DLL the binaries and those plugins pull in gets copied next to
@@ -533,14 +536,13 @@ jobs:
             "lichii-${GITHUB_SHA}-${{ matrix.platform }}.dmg"
           ls -la "lichii-${GITHUB_SHA}-${{ matrix.platform }}.dmg"
 
-      # The artifact is the bin folder itself: GitHub zips artifacts on download, and uploading a
-      # zip gave a zip inside a zip. The release job zips it once for the release.
+      # The artifact is the full release zip containing lichii.exe, eden-cli.exe, and Qt runtime dependencies
       - name: Upload Windows binary
         if: matrix.platform == 'windows-x86_64'
         uses: actions/upload-artifact@v7
         with:
           name: lichii-${{ matrix.platform }}-${{ github.sha }}
-          path: build/release/bin/
+          path: lichii-${{ matrix.platform }}.zip
           if-no-files-found: error
           retention-days: 7
 
@@ -601,22 +603,19 @@ jobs:
         run: |
           set -euo pipefail
           mkdir dist
-          # Asset names drop the commit sha: the release tag already identifies the build, and
-          # stable names let the notes table link to them.
           strip_sha() { sed "s/-${GITHUB_SHA}//" <<< "$1"; }
+          # Copy any already-zipped or packaged binaries from artifacts
+          find artifacts -type f \( -name '*.zip' -o -name '*.AppImage' -o -name '*.tar.gz' -o -name '*.dmg' \) | while read -r file; do
+            base=$(basename "$file")
+            cp "$file" "dist/$(strip_sha "$base")"
+          done
+          # If an artifact directory had raw files instead of archives, zip it
           for artifact in artifacts/*/; do
+            [ -d "$artifact" ] || continue
             name=$(basename "$artifact")
-            if compgen -G "$artifact*.AppImage" > /dev/null; then
-              # Linux: ship the AppImage and the tar.gz as they are.
-              for file in "$artifact"*.AppImage "$artifact"*.tar.gz; do
-                cp "$file" "dist/$(strip_sha "$(basename "$file")")"
-              done
-            elif compgen -G "$artifact*.zip" > /dev/null; then
-              for file in "$artifact"*.zip "$artifact"*.dmg; do
-                [[ -e "$file" ]] && cp "$file" "dist/$(strip_sha "$(basename "$file")")"
-              done
-            else
-              (cd "$artifact" && zip -qr "${GITHUB_WORKSPACE}/dist/$(strip_sha "$name").zip" .)
+            clean_name=$(strip_sha "$name")
+            if [ ! -f "dist/${clean_name}.zip" ] && ! compgen -G "dist/${clean_name}*" > /dev/null; then
+              (cd "$artifact" && zip -qr "${GITHUB_WORKSPACE}/dist/${clean_name}.zip" .)
             fi
           done
           ls -la dist
