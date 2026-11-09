@@ -115,7 +115,7 @@ bool Enabled() {
         if (qEnvironmentVariableIntValue("FRITCHII_CLASSIC_UI") != 0) {
             return false;
         }
-        return std::string_view{Common::g_build_name} == "Fritchii";
+        return true;
     }();
     return enabled;
 }

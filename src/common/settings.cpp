@@ -403,8 +403,7 @@ u32 FrameGenMultiplier() {
 }
 
 bool FrameGenActive() {
-    static const bool fritchii = std::string_view{Common::g_build_name} == "Fritchii";
-    return values.frame_gen.GetValue() && !fritchii;
+    return false;
 }
 
 size_t FrameGenGenerations() {
