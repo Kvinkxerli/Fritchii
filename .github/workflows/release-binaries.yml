@@ -285,6 +285,7 @@ jobs:
             "-DCMAKE_PREFIX_PATH=$qtDir" `
             "-DQt6_DIR=$qtDir/lib/cmake/Qt6" `
             -DYUZU_USE_BUNDLED_SDL3=ON `
+            -DYUZU_USE_BUNDLED_SIRIT=OFF `
             -DENABLE_UPDATE_CHECKER=ON `
             -DLICHII_BUILD_TAG=build-${{ github.run_number }} `
             -DLICHII_BUILD_PLATFORM=${{ matrix.platform }} `

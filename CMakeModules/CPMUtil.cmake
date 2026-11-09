@@ -1050,9 +1050,26 @@ function(AddCIPackage)
         set(sha512sum_file
             "${CMAKE_CURRENT_BINARY_DIR}/.cpmutil_${ARTIFACT}_sha512sum")
 
-        file(DOWNLOAD "${sha512sum_url}" "${sha512sum_file}"
-            STATUS sha512sum_status)
-        list(GET sha512sum_status 0 sha512sum_error)
+        set(cpm_auth_args)
+        if(DEFINED ENV{CPM_GITHUB_TOKEN} AND NOT "$ENV{CPM_GITHUB_TOKEN}" STREQUAL "")
+            set(cpm_auth_args HTTPHEADER "Authorization: Bearer $ENV{CPM_GITHUB_TOKEN}")
+        endif()
+
+        set(sha512sum_error 1)
+        set(sha512sum_msg "unknown")
+        foreach(attempt RANGE 1 3)
+            file(DOWNLOAD "${sha512sum_url}" "${sha512sum_file}"
+                STATUS sha512sum_status
+                ${cpm_auth_args}
+                USERAGENT "Mozilla/5.0 (Windows NT 10.0; Win64; x64) CMake/CPMUtil")
+            list(GET sha512sum_status 0 sha512sum_error)
+            if (sha512sum_error EQUAL 0)
+                break()
+            endif()
+            list(GET sha512sum_status 1 sha512sum_msg)
+            message(STATUS "[CPMUtil] Download sha512sum attempt ${attempt}/3 failed: ${sha512sum_msg}. Retrying in 2s...")
+            execute_process(COMMAND ${CMAKE_COMMAND} -E sleep 2)
+        endforeach()
 
         # The checksum only verifies a download. When GitHub can't serve it (an outage) but this
         # exact version is already unpacked in the source cache, nothing is downloaded: go on
@@ -1070,7 +1087,7 @@ function(AddCIPackage)
                 set(hash_args HASH "unverified-cached-copy")
             else()
                 message(FATAL_ERROR "[CPMUtil] Failed to download sha512sum "
-                    "for ${ARTIFACT_NAME} from ${sha512sum_url}")
+                    "for ${ARTIFACT_NAME} from ${sha512sum_url}: ${sha512sum_msg} (code ${sha512sum_error})")
             endif()
         else()
             file(READ "${sha512sum_file}" sha512sum_hash)

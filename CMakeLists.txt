@@ -254,10 +254,6 @@ cmake_dependent_option(YUZU_USE_EXTERNAL_FFMPEG "Build FFmpeg from external sour
 
 # sirit
 set(BUNDLED_SIRIT_DEFAULT OFF)
-if (MSVC AND NOT (CMAKE_BUILD_TYPE MATCHES "Deb") OR ANDROID)
-    set(BUNDLED_SIRIT_DEFAULT ON)
-endif()
-
 option(YUZU_USE_BUNDLED_SIRIT "Download bundled sirit" ${BUNDLED_SIRIT_DEFAULT})
 
 # FreeBSD 15+ has libusb, versions below should disable it
