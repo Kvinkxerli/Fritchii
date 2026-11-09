@@ -153,6 +153,7 @@ constexpr std::array BUILTIN_PATCHES{
         .module = "main",
         .build_id = "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348",
         .records = OCCLUSION_OFF_RECORDS,
+        .enable_env = nullptr,
         .disable_env = "EDEN_NX2_NO_OCCLUSION_OFF",
     },
     BuiltinPatch{
@@ -161,6 +162,7 @@ constexpr std::array BUILTIN_PATCHES{
         .module = "main",
         .build_id = "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348",
         .records = POLL_BACKOFF_RECORDS,
+        .enable_env = nullptr,
         .disable_env = "EDEN_NX2_NO_POLL_BACKOFF",
     },
 };
