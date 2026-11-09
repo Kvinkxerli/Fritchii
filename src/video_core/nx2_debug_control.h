@@ -369,6 +369,16 @@ inline void LoadExperiments() {
         // EXP39 = 3: publish to a back that waits after 8 words, no snapshot refresh of entries
         // that ran (zortos293/Lichii#805 62db242b34; see the EXP39 notes above). Timing only.
         g_experiments[39].store(3, std::memory_order_relaxed);
+        // EXP22 = 7: FRONT_STATE + DRAW_BATCH + SKIP_SAME_DRAWREG (compresses ring traffic for NPC draws in towns)
+        g_experiments[22].store(7, std::memory_order_relaxed);
+        // EXP24 = 1: OoT present poll wakes on GPU write instead of coarse 1ms sleep
+        g_experiments[24].store(1, std::memory_order_relaxed);
+        // EXP25 = 1: Resource poll backoff (500us sleep on pending resource poll loop, eliminates 100% core spin on NPC loads)
+        g_experiments[25].store(1, std::memory_order_relaxed);
+        // EXP26 = 3: Native uniform bank checks: bit 1 (streamed uniform buffers skip check) + bit 2 (SSE2 fast page compare)
+        g_experiments[26].store(3, std::memory_order_relaxed);
+        // EXP28 = 3: Fewer fences: bit 1 (FENCE_TRIM) + bit 2 (FENCE_FOLD)
+        g_experiments[28].store(3, std::memory_order_relaxed);
         for (int n = 0; n < ExperimentCount; ++n) {
             const std::string name = "EDEN_NX2_EXP" + std::to_string(n);
             if (const char* value = std::getenv(name.c_str())) {

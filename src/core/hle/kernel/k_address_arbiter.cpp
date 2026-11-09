@@ -144,7 +144,7 @@ private:
 /// microseconds a thread about to wait on an address first watches the word. Capped at 1 ms.
 s64 ArbSpinMicroseconds() {
     const int value =
-        VideoCore::Nx2Debug::SwitchValue(VideoCore::Nx2Debug::g_arb_spin, "EDEN_NX2_ARB_SPIN", 0);
+        VideoCore::Nx2Debug::SwitchValue(VideoCore::Nx2Debug::g_arb_spin, "EDEN_NX2_ARB_SPIN", 8);
     return value <= 0 ? 0 : (std::min)(s64{value}, s64{1000});
 }
 

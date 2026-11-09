@@ -156,12 +156,12 @@ constexpr std::array BUILTIN_PATCHES{
         .disable_env = "EDEN_NX2_NO_OCCLUSION_OFF",
     },
     BuiltinPatch{
-        .name = "Resource poll backoff (built-in, EDEN_NX2_OOT_POLL_BACKOFF=1)",
+        .name = "Resource poll backoff (built-in)",
         .title_id = 0x0400486024DEC000,
         .module = "main",
         .build_id = "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348",
         .records = POLL_BACKOFF_RECORDS,
-        .enable_env = "EDEN_NX2_OOT_POLL_BACKOFF",
+        .disable_env = "EDEN_NX2_NO_POLL_BACKOFF",
     },
 };
 

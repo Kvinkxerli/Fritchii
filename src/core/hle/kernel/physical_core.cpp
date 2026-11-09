@@ -40,7 +40,7 @@ namespace {
 bool IdlePauseOn() {
 #if defined(NX2_IDLE_HAS_PAUSE)
     return VideoCore::Nx2Debug::SwitchValue(VideoCore::Nx2Debug::g_idle_pause,
-                                            "EDEN_NX2_IDLE_PAUSE", 0) > 0;
+                                            "EDEN_NX2_IDLE_PAUSE", 1) > 0;
 #else
     return false;
 #endif
