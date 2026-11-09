@@ -39,8 +39,12 @@ bool Qualifies(const Plan& plan, Mode mode) {
     if (mode == Mode::Force) {
         return plan.Enabled() && plan.chosen_cores >= MinForcedCores;
     }
+    const auto guest_threads = static_cast<std::size_t>(std::popcount(plan.guest));
+    if (plan.efficiency_cores > 0 && plan.chosen_cores >= MinForcedCores && guest_threads >= 4) {
+        return plan.Enabled();
+    }
     return plan.Enabled() && plan.chosen_cores >= MinAutoCores &&
-           static_cast<std::size_t>(std::popcount(plan.guest)) >= MinAutoGuestProcessors;
+           guest_threads >= MinAutoGuestProcessors;
 }
 
 } // Anonymous namespace
