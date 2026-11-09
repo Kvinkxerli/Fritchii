@@ -75,8 +75,6 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 3000M
       CCACHE_COMPILERCHECK: content
-      SCCACHE_DIR: ${{ github.workspace }}/.sccache
-      SCCACHE_CACHE_SIZE: 3G
       CPM_SOURCE_CACHE: ${{ github.workspace }}/.cache/cpm
       CPM_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     strategy:
@@ -182,17 +180,6 @@ jobs:
           modules: qtcharts
           cache: true
 
-      # MSVC is not something ccache handles well, so that job uses sccache. The other jobs use
-      # ccache, which CMake enables through USE_CCACHE (externals/cmake-modules/UseCcache.cmake).
-      - name: Install sccache on Windows
-        if: matrix.platform == 'windows-x86_64'
-        shell: pwsh
-        run: |
-          $zip = Join-Path $env:RUNNER_TEMP 'sccache.zip'
-          Invoke-WebRequest -OutFile $zip https://github.com/mozilla/sccache/releases/download/v0.19.0/sccache-v0.19.0-x86_64-pc-windows-msvc.zip
-          Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP 'sccache')
-          $bin = (Get-ChildItem -Recurse -Filter sccache.exe (Join-Path $env:RUNNER_TEMP 'sccache')).DirectoryName
-          $bin | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
 
       - name: Install Vulkan SDK on Windows
         if: matrix.platform == 'windows-x86_64'
@@ -237,9 +224,7 @@ jobs:
         id: compiler-cache
         uses: actions/cache/restore@v5
         with:
-          path: |
-            .ccache
-            .sccache
+          path: .ccache
           key: objects-${{ matrix.platform }}-v2-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             objects-${{ matrix.platform }}-v2-${{ github.sha }}-
@@ -284,27 +269,38 @@ jobs:
 
       - name: Configure Windows
         if: matrix.platform == 'windows-x86_64'
-        shell: bash
+        shell: pwsh
         run: |
-          set -euo pipefail
-          cmake -S . -B build/release -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_TESTING=OFF \
-            -DYUZU_TESTS=OFF \
-            -DYUZU_CMD=ON \
-            -DYUZU_ROOM=OFF \
-            -DYUZU_ROOM_STANDALONE=OFF \
-            -DYUZU_USE_BUNDLED_QT=OFF \
-            "-DCMAKE_PREFIX_PATH=$QT_ROOT_DIR" \
-            -DYUZU_USE_BUNDLED_SDL3=ON \
-            -DVulkanHeaders_FORCE_BUNDLED=ON \
-            -DVulkanUtilityLibraries_FORCE_BUNDLED=ON \
-            -DENABLE_UPDATE_CHECKER=ON \
-            -DLICHII_BUILD_TAG=build-${{ github.run_number }} \
-            -DLICHII_BUILD_PLATFORM=${{ matrix.platform }} \
-            -DUSE_DISCORD_PRESENCE=OFF \
-            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          $ErrorActionPreference = "Continue"
+          $qtDir = $env:QT_ROOT_DIR -replace '\\', '/'
+          Write-Host "Configuring CMake with Qt at $qtDir"
+          cmake -S . -B build/release -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DBUILD_TESTING=OFF `
+            -DYUZU_TESTS=OFF `
+            -DYUZU_CMD=ON `
+            -DYUZU_ROOM=OFF `
+            -DYUZU_ROOM_STANDALONE=OFF `
+            -DYUZU_USE_BUNDLED_QT=OFF `
+            "-DCMAKE_PREFIX_PATH=$qtDir" `
+            "-DQt6_DIR=$qtDir/lib/cmake/Qt6" `
+            -DYUZU_USE_BUNDLED_SDL3=ON `
+            -DENABLE_UPDATE_CHECKER=ON `
+            -DLICHII_BUILD_TAG=build-${{ github.run_number }} `
+            -DLICHII_BUILD_PLATFORM=${{ matrix.platform }} `
+            -DUSE_DISCORD_PRESENCE=OFF
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::CMake configure failed with exit code $LASTEXITCODE"
+            if (Test-Path "build/release/CMakeFiles/CMakeConfigureLog.yaml") {
+              Write-Host "=== CMakeConfigureLog.yaml (tail 150) ==="
+              Get-Content "build/release/CMakeFiles/CMakeConfigureLog.yaml" -Tail 150
+            }
+            if (Test-Path "build/release/CMakeFiles/CMakeError.log") {
+              Write-Host "=== CMakeError.log (tail 150) ==="
+              Get-Content "build/release/CMakeFiles/CMakeError.log" -Tail 150
+            }
+            exit 1
+          }
 
       - name: Configure macOS
         if: startsWith(matrix.platform, 'macos')
@@ -369,35 +365,10 @@ jobs:
           key: ${{ steps.cpm-cache.outputs.cache-primary-key }}
 
       - name: Build
-        if: ${{ ! matrix.mingw }}
-        shell: bash
-        run: |
-          if command -v ccache > /dev/null; then ccache --zero-stats; else sccache --zero-stats; fi
-          cmake --build build/release --target yuzu yuzu-cmd --parallel
-          if command -v ccache > /dev/null; then ccache --show-stats; else sccache --show-stats; fi
-
-      - name: Build MinGW PGO
-        if: matrix.mingw
-        shell: msys2 {0}
-        run: |
-          ccache --zero-stats
-          cmake --build build/release --target yuzu yuzu-cmd --parallel
-          ccache --show-stats
-
-      - name: Stop sccache on Windows
-        if: always() && matrix.platform == 'windows-x86_64' && steps.compiler-cache.outcome == 'success'
+        if: matrix.platform == 'windows-x86_64'
         shell: pwsh
         run: |
-          try { sccache --stop-server } catch {}
-
-      - name: Save compiler objects
-        if: always() && steps.compiler-cache.outcome == 'success'
-        uses: actions/cache/save@v5
-        with:
-          path: |
-            .ccache
-            .sccache
-          key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
+          cmake --build build/release --target yuzu yuzu-cmd --parallel
 
       # Plain tar.gz with the two programs. GitHub artifacts drop the executable bit, so a tar is
       # what keeps it. This one is not self-contained: it needs Qt 6 and the usual libraries
@@ -464,7 +435,7 @@ jobs:
               throw "build/release/bin/$exe was not produced"
             }
           }
-          windeployqt --release --no-translations build/release/bin/lichii.exe
+          & "$env:QT_ROOT_DIR\bin\windeployqt.exe" --release --no-translations build/release/bin/lichii.exe
 
       # A dynamic MinGW build is not portable on its own: windeployqt6 brings the Qt libraries and
       # plugins, then every non-system DLL the binaries and those plugins pull in gets copied next to
