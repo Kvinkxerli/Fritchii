@@ -111,10 +111,6 @@ if (MSVC AND NOT CXX_CLANG)
         /we4265 # 'class': class has virtual functions, but destructor is not virtual
         /we4388 # 'expression': signed/unsigned mismatch
         /we4389 # 'operator': signed/unsigned mismatch
-        /we4456 # Declaration of 'identifier' hides previous local declaration
-        /we4457 # Declaration of 'identifier' hides function parameter
-        /we4458 # Declaration of 'identifier' hides class member
-        /we4459 # Declaration of 'identifier' hides global declaration
         /we4505 # 'function': unreferenced local function has been removed
         /we4547 # 'operator': operator before comma has no effect; expected operator with side-effect
         /we4549 # 'operator1': operator before comma has no effect; did you intend 'operator2'?
@@ -128,6 +124,10 @@ if (MSVC AND NOT CXX_CLANG)
         /wd4324 # 'struct_name': structure was padded due to __declspec(align())
         /wd4201 # nonstandard extension used : nameless struct/union
         /wd4702 # unreachable code (when used with LTO)
+        /wd4456 # Declaration of 'identifier' hides previous local declaration
+        /wd4457 # Declaration of 'identifier' hides function parameter
+        /wd4458 # Declaration of 'identifier' hides class member
+        /wd4459 # Declaration of 'identifier' hides global declaration
 
         $<$<CONFIG:Release>:/GS->   # No stack buffer overflow checks
         /Gy                         # Enable function level linking
