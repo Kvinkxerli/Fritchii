@@ -22,24 +22,24 @@ std::string_view Trim(std::string_view text) {
 }
 } // namespace
 
-std::vector<BasicSetting*> TunedSettings(Values& values) {
+std::vector<BasicSetting*> TunedSettings(Values& v) {
     // One line per setting; bump Revision when this list or a default here changes.
     return {
-        &values.gpu_accuracy,             // Low
-        &values.dma_accuracy,             // Default
-        &values.gpu_fence_behavior,       // Default
-        &values.vsync_mode,               // Mailbox: the host frame pacer times presents
-        &values.async_presentation,       // On: the host frame pacer runs on the present thread
-        &values.use_asynchronous_shaders, // On: unbuilt pipelines skip draws, no freeze
-        &values.use_docked_mode,          // Docked
-        &values.memory_layout_mode,       // 8 GB: Ocarina's own memory size
-        &values.nvdec_emulation,          // GPU: Ocarina's cutscene videos
-        &values.scaling_filter,           // ScaleForce (newer Lichii builds seed FSR)
-        &values.resolution_setup,         // 1x: a higher scale left over from other games costs fps
-        &values.anti_aliasing,            // FXAA
-        &values.cpu_accuracy,             // Auto
-        &values.use_disk_shader_cache,    // On: no shader rebuild every boot
-        &values.use_vulkan_driver_pipeline_cache, // On
+        &v.gpu_accuracy,             // Low
+        &v.dma_accuracy,             // Default
+        &v.gpu_fence_behavior,       // Default
+        &v.vsync_mode,               // Mailbox: the host frame pacer times presents
+        &v.async_presentation,       // On: the host frame pacer runs on the present thread
+        &v.use_asynchronous_shaders, // On: unbuilt pipelines skip draws, no freeze
+        &v.use_docked_mode,          // Docked
+        &v.memory_layout_mode,       // 8 GB: Ocarina's own memory size
+        &v.nvdec_emulation,          // GPU: Ocarina's cutscene videos
+        &v.scaling_filter,           // ScaleForce (newer Lichii builds seed FSR)
+        &v.resolution_setup,         // 1x: a higher scale left over from other games costs fps
+        &v.anti_aliasing,            // FXAA
+        &v.cpu_accuracy,             // Auto
+        &v.use_disk_shader_cache,    // On: no shader rebuild every boot
+        &v.use_vulkan_driver_pipeline_cache, // On
     };
 }
 
@@ -128,9 +128,9 @@ std::vector<Change> ReconcilePerGame(std::span<BasicSetting* const> settings, co
     return changes;
 }
 
-std::vector<Change> FixDockedController(Values& values) {
-    auto& player = values.players.GetValue(true)[0];
-    if (values.use_docked_mode.GetValue(true) != ConsoleMode::Docked ||
+std::vector<Change> FixDockedController(Values& v) {
+    auto& player = v.players.GetValue(true)[0];
+    if (v.use_docked_mode.GetValue(true) != ConsoleMode::Docked ||
         player.controller_type != ControllerType::Handheld) {
         return {};
     }
@@ -139,20 +139,20 @@ std::vector<Change> FixDockedController(Values& values) {
 }
 
 std::map<std::string, std::string> GlobalValues(std::span<BasicSetting* const> settings) {
-    std::map<std::string, std::string> values;
+    std::map<std::string, std::string> result;
     for (const BasicSetting* const setting : settings) {
-        values.emplace(setting->GetLabel(), setting->ToStringGlobal());
+        result.emplace(setting->GetLabel(), setting->ToStringGlobal());
     }
-    return values;
+    return result;
 }
 
 std::map<std::string, std::string> PerGameValues(std::span<BasicSetting* const> settings) {
-    std::map<std::string, std::string> values;
+    std::map<std::string, std::string> result;
     for (const BasicSetting* const setting : settings) {
-        values.emplace(setting->GetLabel(),
+        result.emplace(setting->GetLabel(),
                        setting->UsingGlobal() ? std::string{UseGlobal} : setting->ToString());
     }
-    return values;
+    return result;
 }
 
 std::string FormatChanges(std::span<const Change> changes) {
