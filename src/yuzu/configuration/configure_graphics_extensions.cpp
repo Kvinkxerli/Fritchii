@@ -16,6 +16,7 @@
 #include "yuzu/configuration/configuration_shared.h"
 #include "yuzu/configuration/configure_graphics_extensions.h"
 #include "yuzu/configuration/shared_widget.h"
+#include "yuzu/fritchii/fritchii_ui.h"
 
 ConfigureGraphicsExtensions::ConfigureGraphicsExtensions(
     const Core::System& system_, std::shared_ptr<std::vector<ConfigurationShared::Tab*>> group_,
@@ -77,6 +78,20 @@ void ConfigureGraphicsExtensions::Setup(const ConfigurationShared::Builder& buil
 
     auto& hacks = *ui->hacks_target->layout();
     std::map<u32, QWidget*> hacks_hold{}; // A map will sort the data for us
+
+    if (FritchiiUi::Enabled()) {
+        // Where Lichii has its "Pin GPU threads" toggle: players kept asking for it.
+        auto* pinning = new QLabel(tr("<b>GPU thread pinning is built in.</b><br>On automatically, nothing "
+                                      "to turn on. Fritchii had it first."),
+                                   this);
+        pinning->setObjectName(QStringLiteral("FritchiiSettingsNote"));
+        pinning->setWordWrap(true);
+        QFont font = pinning->font();
+        font.setPointSizeF(font.pointSizeF() * 1.35);
+        pinning->setFont(font);
+        pinning->setContentsMargins(0, 6, 0, 12);
+        hacks.addWidget(pinning);
+    }
 
     for (auto setting : Settings::values.linkage.by_category[Settings::Category::RendererHacks]) {
         auto* widget = builder.BuildWidget(setting, apply_funcs);

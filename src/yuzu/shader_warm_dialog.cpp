@@ -19,6 +19,7 @@
 #include "common/settings.h"
 #include "qt_common/config/uisettings.h"
 #include "video_core/shader_warm/shader_warm_builder.h"
+#include "yuzu/fritchii/fritchii_ui.h"
 #include "yuzu/shader_warm_dialog.h"
 
 namespace ShaderWarm = VideoCommon::ShaderWarm;
@@ -105,6 +106,20 @@ ShaderWarmDialog::ShaderWarmDialog(Core::System& system_, std::filesystem::path 
     buttons->addWidget(button);
 
     auto* layout = new QVBoxLayout(this);
+    if (FritchiiUi::Enabled()) {
+        // Players compared this window's program counts with the ~120,000 pipelines of the
+        // Preparing shaders screen and thought shaders were missing (2026-11-09).
+        auto* note = new QLabel(tr("<b>Optional quick warm-up.</b><br>The full preparation "
+                                   "(about 120,000 shaders for OoT) runs by itself on the "
+                                   "\"Preparing shaders\" screen when you start the game."),
+                                this);
+        note->setWordWrap(true);
+        QFont font = note->font();
+        font.setPointSizeF(font.pointSizeF() * 1.2);
+        note->setFont(font);
+        note->setContentsMargins(0, 0, 0, 8);
+        layout->addWidget(note);
+    }
     layout->addWidget(stage_label);
     layout->addWidget(progress_bar);
     layout->addWidget(result_label);
@@ -211,7 +226,9 @@ void ShaderWarmDialog::OnFinished(const ShaderWarm::Result& result, bool stopped
                    "is paused, or right away with Emulation > Prepare Shaders Now (a title "
                    "screen is a good place). It never slows the game down on its own, and it "
                    "is done once per driver version.");
-        if (!ShaderLibrariesOn()) {
+        // Not in Fritchii: its Preparing shaders screen builds the graphics part, and shader
+        // libraries stay off on AMD's Windows driver on purpose (they crash there).
+        if (!ShaderLibrariesOn() && !FritchiiUi::Enabled()) {
             text += QLatin1Char(' ') +
                     tr("The graphics part also needs Shader libraries, in Configure, Graphics, "
                        "Advanced.");

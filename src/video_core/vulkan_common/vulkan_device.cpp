@@ -1718,6 +1718,13 @@ void Device::RemoveUnsuitableExtensions() {
     features.mesh_shader.primitiveFragmentShadingRateMeshShader = VK_FALSE;
     features.mesh_shader.meshShaderQueries = VK_FALSE;
     extensions.mesh_shader = features.mesh_shader.taskShader && features.mesh_shader.meshShader;
+    // EDEN_NX2_NO_DYNAMIC_LOGIC_OP=1: no dynamic logic op, as AMD's Windows driver (tests the
+    // conversion of NVIDIA-recorded precompiled pipelines on an NVIDIA GPU).
+    if (features.extended_dynamic_state2.extendedDynamicState2LogicOp &&
+        std::getenv("EDEN_NX2_NO_DYNAMIC_LOGIC_OP") != nullptr) {
+        LOG_WARNING(Render_Vulkan, "EDEN_NX2_NO_DYNAMIC_LOGIC_OP: dynamic logic op disabled");
+        features.extended_dynamic_state2.extendedDynamicState2LogicOp = VK_FALSE;
+    }
     // EDEN_NX2_FORCE_MESH_FALLBACK=1: leave VK_EXT_mesh_shader disabled, so task/mesh draws take
     // the compute fallback a device without it uses.
     if (extensions.mesh_shader && std::getenv("EDEN_NX2_FORCE_MESH_FALLBACK") != nullptr) {

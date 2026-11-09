@@ -155,6 +155,9 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
            tr("Strength of RCAS (AMD's contrast-adaptive sharpening) on the upscaler used in place "
               "of a game's DLSS (AMD FSR 3.1); 0% turns it off.\nAlso sets the sharpening "
               "of the AMD FSR 1 and SGSR window adapting filters."));
+    INSERT(Settings, nvidia_dlss_preset, tr("DLSS preset:"),
+           tr("The DLSS model. K is the tested default; L and M are NVIDIA's newer models, J the "
+              "older one. Default lets NVIDIA choose per quality mode."));
     INSERT(Settings, nvidia_dlss, tr("Use NVIDIA DLSS in place of a game's DLSS (experimental)"),
            tr("Uses NVIDIA DLSS on GeForce RTX cards in place of a Switch 2 game's own DLSS, "
               "instead of AMD FSR 3.1.\nNeeds NVIDIA's Streamline loader, and NVIDIA DLSS unless "
@@ -568,6 +571,14 @@ std::unique_ptr<ComboboxTranslationMap> ComboboxEnumeration(QObject* parent) {
                               PAIR(AntiAliasing, None, tr("None")),
                               PAIR(AntiAliasing, Fxaa, tr("FXAA")),
                               PAIR(AntiAliasing, Smaa, tr("SMAA")),
+                          }});
+    translations->insert({Settings::EnumMetadata<Settings::DlssPreset>::Index(),
+                          {
+                              PAIR(DlssPreset, Default, tr("Default (NVIDIA's choice)")),
+                              PAIR(DlssPreset, J, tr("J")),
+                              PAIR(DlssPreset, K, tr("K (recommended)")),
+                              PAIR(DlssPreset, L, tr("L")),
+                              PAIR(DlssPreset, M, tr("M")),
                           }});
     translations->insert({Settings::EnumMetadata<Settings::OotAntiAliasing>::Index(),
                           {

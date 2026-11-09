@@ -985,6 +985,13 @@ void CanonicalizeKeyState(FixedPipelineState& state, const DynamicFeatures& feat
         state.line_stipple_factor = stipple_factor;
         state.line_stipple_pattern = stipple_pattern;
     }
+    // The logic operation counts only with logic op on. Without a dynamic logic op (AMD's
+    // Windows driver) the key held the register's operation even with logic op off, so keys
+    // recorded where it is dynamic (NVIDIA, the OoT recipe) never matched. Only while the enable
+    // itself is static: a dynamic enable leaves logic_op_enable 0 in every key.
+    if (!features.has_dynamic_state3_logic_op_enable && !state.dynamic_state.logic_op_enable) {
+        state.dynamic_state.logic_op.Assign(0);
+    }
 }
 
 // EDEN_NX2_REKEY_FOREIGN_PIPELINES=0: cached graphics pipelines another GPU driver (or driver
@@ -4168,6 +4175,17 @@ void PipelineCache::RecordedKeyForThisDevice(GraphicsPipelineCacheKey& key) cons
     // Records made before a driver update are built for this driver, as draws will key them.
     key_state.driver_id = dynamic_features.driver_id;
     key_state.driver_version = dynamic_features.driver_version;
+    // Recorded with a dynamic logic op (NVIDIA: the OoT recipe), built where it is static (AMD's
+    // Windows driver, 116373 of the recipe's 120461 records skipped, 2026-11-09): with logic op
+    // off the operation does not count (CanonicalizeKeyState clears it), so the record is the
+    // key a draw gives here. With logic op on the operation is unknown: left for another device.
+    if (key_state.extended_dynamic_state_2_logic_op != 0 &&
+        !dynamic_features.has_extended_dynamic_state_2_logic_op && CanonicalKeys() &&
+        !dynamic_features.has_dynamic_state3_logic_op_enable &&
+        key_state.dynamic_state.logic_op_enable == 0) {
+        key_state.extended_dynamic_state_2_logic_op.Assign(0);
+        key_state.dynamic_state.logic_op.Assign(0);
+    }
     // Canonical as draws key them (EDEN_NX2_CANONICAL_KEYS=1), so the pipeline is created with
     // the create info a draw gives it (depth bounds included, which the tool's keys keep as
     // recorded) and the driver finds it compiled.

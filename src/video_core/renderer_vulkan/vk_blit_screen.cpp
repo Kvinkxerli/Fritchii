@@ -127,7 +127,7 @@ void BlitScreen::DrawToFrame(const Device& device, RasterizerVulkan& rasterizer,
         swapchain_view_format = current_swapchain_view_format;
     }
 
-    const bool storage_required = Settings::values.frame_gen.GetValue();
+    const bool storage_required = Settings::FrameGenActive();
     if (resource_update_required) {
         WaitIdle(device);
         SetWindowAdaptPass(device);

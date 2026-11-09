@@ -8,6 +8,7 @@
 #include <string_view>
 
 #include "common/logging.h"
+#include "common/settings.h"
 #include "video_core/dlss_evaluation.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_streamline_dlss.h"
@@ -60,7 +61,20 @@ sl::DLSSPreset Preset() {
     if (value && std::string_view{value} == "default") {
         return sl::DLSSPreset::eDefault;
     }
-    return sl::DLSSPreset::ePresetK;
+    // Graphics > DLSS preset.
+    switch (Settings::values.nvidia_dlss_preset.GetValue()) {
+    case Settings::DlssPreset::Default:
+        return sl::DLSSPreset::eDefault;
+    case Settings::DlssPreset::J:
+        return sl::DLSSPreset::ePresetJ;
+    case Settings::DlssPreset::L:
+        return sl::DLSSPreset::ePresetL;
+    case Settings::DlssPreset::M:
+        return sl::DLSSPreset::ePresetM;
+    case Settings::DlssPreset::K:
+    default:
+        return sl::DLSSPreset::ePresetK;
+    }
 }
 
 sl::float4x4 Identity() {

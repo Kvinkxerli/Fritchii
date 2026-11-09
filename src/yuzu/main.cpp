@@ -219,6 +219,18 @@ int main(int argc, char* argv[]) {
     Updater::PrepareLaunch();
 #endif
     LoadNx2Switches(argv[0]);
+    // Fritchii: NVIDIA's driver shader cache must hold OoT's ~120,000 prepared pipelines. Its size
+    // is a Control Panel setting newer drivers no longer show ("Shader Cache Size"); the driver
+    // also reads these variables, for this process only (nothing system-wide changes). A value
+    // already set (the player's, or nx2_switches.txt) wins.
+    if (FritchiiUi::Enabled()) {
+        if (!qEnvironmentVariableIsSet("__GL_SHADER_DISK_CACHE_SKIP_CLEANUP")) {
+            qputenv("__GL_SHADER_DISK_CACHE_SKIP_CLEANUP", "1");
+        }
+        if (!qEnvironmentVariableIsSet("__GL_SHADER_DISK_CACHE_SIZE")) {
+            qputenv("__GL_SHADER_DISK_CACHE_SIZE", "10737418240"); // 10 GiB
+        }
+    }
 #if YUZU_ROOM
     bool launch_room = false;
     for (int i = 1; i < argc; i++) {

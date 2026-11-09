@@ -202,7 +202,7 @@ void FrameGen::Process(const Device& device, Frame* frame, VkFormat format,
         shaders.emplace(device);
     }
 
-    if (unavailable || !Settings::values.frame_gen.GetValue()) {
+    if (unavailable || !Settings::FrameGenActive()) {
         if (chain || fsr3_chain) {
             scheduler.Finish();
             chain.reset();

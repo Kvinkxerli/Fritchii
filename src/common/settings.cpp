@@ -19,6 +19,7 @@
 #include <deque>
 #include <fmt/core.h>
 
+#include "common/scm_rev.h"
 #include "common/settings_enums.h"
 #include "common/assert.h"
 #include "common/fs/fs_util.h"
@@ -401,15 +402,20 @@ u32 FrameGenMultiplier() {
                       MAX_FRAME_GEN_MULTIPLIER);
 }
 
+bool FrameGenActive() {
+    static const bool fritchii = std::string_view{Common::g_build_name} == "Fritchii";
+    return values.frame_gen.GetValue() && !fritchii;
+}
+
 size_t FrameGenGenerations() {
-    if (!values.frame_gen.GetValue()) {
+    if (!FrameGenActive()) {
         return 0;
     }
     return FrameGenMultiplier() - 1;
 }
 
 size_t FrameGenMaxGenerations() {
-    if (!values.frame_gen.GetValue()) {
+    if (!FrameGenActive()) {
         return 0;
     }
     if (values.frame_gen_target_rate.GetValue() != 0) {
