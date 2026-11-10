@@ -147,14 +147,17 @@ TEST_CASE("Thread pinning: hybrid E-cores first still pins the P-cores",
     CHECK((plan.guest & e) == 0);
 }
 
-TEST_CASE("Thread pinning: hybrid 4P+4E is not pinned unless forced", "[common][thread_pinning]") {
-    // Core i5-12450H: 4 P-cores with SMT and 4 E-cores. E-cores do not count toward the threshold.
+TEST_CASE("Thread pinning: hybrid 4P+4E is pinned to P-cores", "[common][thread_pinning]") {
+    // Core i5-12450H: 4 P-cores with SMT and 4 E-cores. Auto mode pins GPU to P-cores and leaves E-cores untouched.
     Builder builder;
     const u64 p = builder.AddCores(4, 2, 1);
     const u64 e = builder.AddCores(4, 1, 0);
     builder.AddL3(p | e, 12 * MiB);
     const Plan plan = MakePlan(builder.topology, Mode::Auto);
-    CheckNotPinned(plan);
+    CHECK(plan.front == 0x0C);
+    CHECK(plan.back == 0x30);
+    CHECK(plan.guest == 0xC3);
+    CHECK((plan.guest & e) == 0);
     CHECK(plan.performance_cores == 4);
     CHECK(plan.efficiency_cores == 4);
 

@@ -428,10 +428,12 @@ inline void LoadExperiments() {
         // EXP39 = 3: publish to a back that waits after 8 words, no snapshot refresh of entries
         // that ran (zortos293/Lichii#805 62db242b34; see the EXP39 notes above). Timing only.
         g_experiments[39].store(3, std::memory_order_relaxed);
+        // EXP12 = 1: fence release waits only for queued writers; eliminates full GPU split ring drains (292 ms/s saved)
+        g_experiments[12].store(1, std::memory_order_relaxed);
         // EXP22 = 7: FRONT_STATE + DRAW_BATCH + SKIP_SAME_DRAWREG (compresses ring traffic for NPC draws in towns)
         g_experiments[22].store(7, std::memory_order_relaxed);
-        // EXP24 = 1: OoT present poll wakes on GPU write instead of coarse 1ms sleep
-        g_experiments[24].store(1, std::memory_order_relaxed);
+        // EXP24 = 3: OoT present poll fast micro-sleep (100us) instead of condition variable 1ms timeout stall
+        g_experiments[24].store(3, std::memory_order_relaxed);
         // EXP25 = 1: Resource poll backoff (500us sleep on pending resource poll loop, eliminates 100% core spin on NPC loads)
         g_experiments[25].store(1, std::memory_order_relaxed);
         // EXP26 = 3: Native uniform bank checks: bit 1 (streamed uniform buffers skip check) + bit 2 (SSE2 fast page compare)

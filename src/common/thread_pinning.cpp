@@ -92,10 +92,14 @@ Plan MakePlan(const Topology& topology, Mode mode) {
         }
     }
     none.l3_caches = groups.size();
-    const auto finish = [&](Plan plan, u64 l3_size) {
+    const auto prepare = [&](Plan plan) {
         plan.performance_cores = none.performance_cores;
         plan.efficiency_cores = none.efficiency_cores;
         plan.l3_caches = none.l3_caches;
+        return plan;
+    };
+    const auto finish = [&](Plan plan, u64 l3_size) {
+        plan = prepare(plan);
         plan.l3_size = l3_size;
         return plan;
     };
@@ -112,12 +116,12 @@ Plan MakePlan(const Topology& topology, Mode mode) {
                 best = &group;
             }
         }
-        if (Plan plan = Assign(best->cores); Qualifies(plan, mode)) {
+        if (Plan plan = prepare(Assign(best->cores)); Qualifies(plan, mode)) {
             return finish(plan, best->size);
         }
         // No single L3 has enough cores (Zen 2 CCXs): span them as before.
     }
-    if (Plan plan = Assign(performance); Qualifies(plan, mode)) {
+    if (Plan plan = prepare(Assign(performance)); Qualifies(plan, mode)) {
         return finish(plan, groups.size() == 1 ? groups.front().size : 0);
     }
     return none;

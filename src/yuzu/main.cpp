@@ -187,7 +187,12 @@ constexpr std::pair<const char*, const char*> BuiltinSwitches[] = {
     {"EDEN_NX2_COMPUTE_SINK", "1"},       {"EDEN_NX2_RING_PAIRS", "1"},
     {"EDEN_NX2_UBO_INPLACE", "1"},        {"EDEN_NX2_PIPELINE_CLEAN", "1"},
     {"EDEN_NX2_LIST_WAIT_SKIP", "1"},     {"EDEN_NX2_PREFLUSH", "1"},
-    {"EDEN_NX2_SEM_FAST", "2"},
+    {"EDEN_NX2_SEM_FAST", "2"},           {"EDEN_NX2_EXP12", "1"},
+    {"EDEN_NX2_EXP24", "3"},              {"EDEN_NX2_EXP22", "7"},
+    {"EDEN_NX2_EXP25", "1"},              {"EDEN_NX2_EXP26", "3"},
+    {"EDEN_NX2_EXP28", "3"},              {"EDEN_NX2_PIN_THREADS", "1"},
+    {"EDEN_NX2_OOT_30FPS", "1"},          {"EDEN_NX2_IDLE_PAUSE", "1"},
+    {"EDEN_NX2_ARB_SPIN", "8"},           {"EDEN_NX2_TRANSCODE_THREADS", "4"},
 };
 
 static void LoadNx2Switches(const char* argv0) {

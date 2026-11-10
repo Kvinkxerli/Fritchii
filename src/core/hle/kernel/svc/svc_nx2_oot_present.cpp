@@ -117,7 +117,7 @@ constexpr size_t MaxScores = 32;
 constexpr size_t MaxLearned = 8;
 constexpr u32 LearnSuccesses = 3;
 
-constexpr s64 DefaultShortSleepUs = 250; // EXP24 = 3
+constexpr s64 DefaultShortSleepUs = 100; // EXP24 = 3 (100 us micro-sleep prevents Windows scheduler 1.75ms timer stalls)
 
 using Common::Nx2GpuWrite::Path;
 constexpr size_t PathCount = static_cast<size_t>(Path::Count);
