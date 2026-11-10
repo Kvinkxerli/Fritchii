@@ -36,7 +36,7 @@ std::vector<BasicSetting*> TunedSettings(Values& v) {
         &v.nvdec_emulation,          // GPU: Ocarina's cutscene videos
         &v.scaling_filter,           // ScaleForce (newer Lichii builds seed FSR)
         &v.resolution_setup,         // 1x: a higher scale left over from other games costs fps
-        &v.anti_aliasing,            // FXAA
+        &v.anti_aliasing,            // None: OoT's own AA (or DLSS) already smooths edges
         &v.cpu_accuracy,             // Auto
         &v.use_disk_shader_cache,    // On: no shader rebuild every boot
         &v.use_vulkan_driver_pipeline_cache, // On
