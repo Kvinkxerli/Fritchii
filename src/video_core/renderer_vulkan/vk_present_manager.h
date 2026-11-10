@@ -83,7 +83,8 @@ private:
 
     /// Host frame pacer (vk_host_pacer.h): collects when earlier frames were shown and holds
     /// `frame` until its target. Returns whether it was held.
-    bool PaceFrame(Frame* frame, std::stop_token token);
+    bool PaceFrame(Frame* frame, std::stop_token token, double* out_fence_wait_ms = nullptr,
+                   double* out_present_sleep_ms = nullptr);
 
     /// Waits for each present id until it is shown (VK_KHR_present_wait).
     void PresentWaitThread(std::stop_token token);

@@ -49,6 +49,8 @@ struct Plan {
     u64 front{};
     u64 back{};
     u64 guest{};
+    std::array<u64, 4> guest_cores{};
+    u64 efficiency_mask{};
 
     std::size_t performance_cores{};
     std::size_t efficiency_cores{};
@@ -59,7 +61,7 @@ struct Plan {
     u64 l3_size{};
 
     [[nodiscard]] bool Enabled() const {
-        return front != 0;
+        return front != 0 || guest != 0;
     }
 };
 

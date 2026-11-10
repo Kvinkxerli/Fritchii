@@ -91,7 +91,13 @@ TextureCache<P>::TextureCache(Runtime& runtime_, Tegra::MaxwellDeviceMemoryManag
         const s64 device_local_memory = static_cast<s64>(runtime.GetDeviceLocalMemory());
         const s64 min_spacing_expected = device_local_memory - 1_GiB;
         const s64 min_spacing_critical = device_local_memory - 512_MiB;
-        const s64 mem_threshold = (std::min)(device_local_memory, TARGET_THRESHOLD);
+        s64 target_thresh = TARGET_THRESHOLD;
+        if (device_local_memory <= 4_GiB) {
+            target_thresh = 2600_MiB;
+        } else if (device_local_memory <= 6_GiB) {
+            target_thresh = 3800_MiB;
+        }
+        const s64 mem_threshold = (std::min)(device_local_memory, target_thresh);
         const s64 min_vacancy_expected = (6 * mem_threshold) / 10;
         const s64 min_vacancy_critical = (2 * mem_threshold) / 10;
         expected_memory = static_cast<u64>(
@@ -434,15 +440,29 @@ void TextureCache<P>::ApplyThresholdOverrides(bool log) {
     // 5/8 of the budget only passes 5 GiB above an 8 GiB budget, so cards up to 8 GB (and
     // integrated GPUs, whose budget is capped at 4-6 GiB) keep the 5 GiB cap.
     u64 max_critical = MaxCriticalMemory;
+    if constexpr (requires { runtime.GetDeviceLocalMemory(); }) {
+        const u64 local_mem = runtime.GetDeviceLocalMemory();
+        if (local_mem <= 4_GiB) {
+            max_critical = 2600_MiB;
+        } else if (local_mem <= 6_GiB) {
+            max_critical = 3800_MiB;
+        }
+    }
     if constexpr (requires { runtime.GetDeviceMemoryBudget(); }) {
         const u64 budget = runtime.GetDeviceMemoryBudget();
-        max_critical = (std::max)(max_critical, budget / 8 * 5);
-        // Cards with 10 GiB or more of budget: 5/8 left ~7.3 GiB on a 12 GB RX 6700 XT, under what
-        // Ocarina's Kokiri Forest keeps alive, so every aggressive pass evicted its CostlyLoad ASTC
-        // textures (a 6144x6144 5x5 one, 31 MiB) and the game re-created them ~128 frames later:
-        // a 24 ms texture stall every ~3 s. Keep 2.5 GiB of the budget for everything else instead.
-        if (budget >= 10_GiB) {
-            max_critical = (std::max)(max_critical, budget - 2560_MiB);
+        if (budget <= 4_GiB) {
+            max_critical = (std::min)(max_critical, budget * 7 / 10);
+        } else if (budget <= 6_GiB) {
+            max_critical = (std::min)(max_critical, budget * 3 / 4);
+        } else {
+            max_critical = (std::max)(max_critical, budget / 8 * 5);
+            // Cards with 10 GiB or more of budget: 5/8 left ~7.3 GiB on a 12 GB RX 6700 XT, under what
+            // Ocarina's Kokiri Forest keeps alive, so every aggressive pass evicted its CostlyLoad ASTC
+            // textures (a 6144x6144 5x5 one, 31 MiB) and the game re-created them ~128 frames later:
+            // a 24 ms texture stall every ~3 s. Keep 2.5 GiB of the budget for everything else instead.
+            if (budget >= 10_GiB) {
+                max_critical = (std::max)(max_critical, budget - 2560_MiB);
+            }
         }
     }
     critical_memory = (std::min)(critical_memory, max_critical);

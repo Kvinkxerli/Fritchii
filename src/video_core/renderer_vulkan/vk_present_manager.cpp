@@ -370,12 +370,14 @@ void PresentManager::PresentThread(std::stop_token token) {
         }
         if (!token.stop_requested()) {
             bool held = false;
+            double fence_wait_ms = 0.0;
+            double present_sleep_ms = 0.0;
             if (present_wait_enabled) {
                 // Only this thread pops the queue: the frame stays at its front, and WaitPresent
                 // keeps waiting while it is held.
                 Frame* const next = present_queue.front();
                 lock.unlock();
-                held = PaceFrame(next, token);
+                held = PaceFrame(next, token, &fence_wait_ms, &present_sleep_ms);
                 lock.lock();
             }
             // Take the frame and notify anyone waiting
@@ -391,6 +393,66 @@ void PresentManager::PresentThread(std::stop_token token) {
             CopyToSwapchain(frame);
             if (Common::Nx2Timeline::Active()) {
                 Common::Nx2Timeline::Instant("vkQueuePresentKHR", {"id", last_present_id});
+            }
+            {
+                struct FrameMetricsTracker {
+                    using Clock = std::chrono::steady_clock;
+                    Clock::time_point window_start{};
+                    Clock::time_point last_present{};
+                    std::vector<double> frame_times_ms;
+                    double total_fence_wait_ms = 0.0;
+                    double total_present_sleep_ms = 0.0;
+                    u64 frame_count = 0;
+
+                    void Record(double fence_ms, double sleep_ms) {
+                        const auto now = Clock::now();
+                        if (last_present != Clock::time_point{}) {
+                            const double ft = std::chrono::duration<double, std::milli>(now - last_present).count();
+                            if (ft > 0.0 && ft < 1000.0) {
+                                frame_times_ms.push_back(ft);
+                            }
+                        }
+                        last_present = now;
+                        total_fence_wait_ms += fence_ms;
+                        total_present_sleep_ms += sleep_ms;
+                        ++frame_count;
+
+                        if (window_start == Clock::time_point{}) {
+                            window_start = now;
+                            return;
+                        }
+                        const double elapsed = std::chrono::duration<double>(now - window_start).count();
+                        if (elapsed >= 5.0 && !frame_times_ms.empty()) {
+                            std::vector<double> sorted = frame_times_ms;
+                            std::sort(sorted.begin(), sorted.end());
+
+                            const double sum = std::accumulate(sorted.begin(), sorted.end(), 0.0);
+                            const double avg_ft = sum / sorted.size();
+                            const double avg_fps = avg_ft > 0.0 ? 1000.0 / avg_ft : 0.0;
+
+                            const size_t idx_99th = static_cast<size_t>(sorted.size() * 0.99);
+                            const double ft_99th = sorted[std::min(idx_99th, sorted.size() - 1)];
+                            const double fps_1pct_low = ft_99th > 0.0 ? 1000.0 / ft_99th : 0.0;
+
+                            const double avg_fence = total_fence_wait_ms / frame_count;
+                            const double avg_sleep = total_present_sleep_ms / frame_count;
+
+                            LOG_INFO(Render_Vulkan,
+                                     "Metrics (5s): Avg FT: {:.2f} ms ({:.1f} FPS) | "
+                                     "1% Low: {:.2f} ms ({:.1f} FPS) | GPU Fence Wait: {:.2f} ms | "
+                                     "Present Sleep: {:.2f} ms | frames: {}",
+                                     avg_ft, avg_fps, ft_99th, fps_1pct_low, avg_fence, avg_sleep, frame_count);
+
+                            frame_times_ms.clear();
+                            total_fence_wait_ms = 0.0;
+                            total_present_sleep_ms = 0.0;
+                            frame_count = 0;
+                            window_start = now;
+                        }
+                    }
+                };
+                static FrameMetricsTracker metrics_tracker;
+                metrics_tracker.Record(fence_wait_ms, present_sleep_ms);
             }
             {
                 static std::chrono::steady_clock::time_point previous{};
@@ -421,8 +483,15 @@ void PresentManager::PresentThread(std::stop_token token) {
     }
 }
 
-bool PresentManager::PaceFrame(Frame* frame, std::stop_token token) {
+bool PresentManager::PaceFrame(Frame* frame, std::stop_token token, double* out_fence_wait_ms,
+                               double* out_present_sleep_ms) {
     using Clock = std::chrono::steady_clock;
+    if (out_fence_wait_ms != nullptr) {
+        *out_fence_wait_ms = 0.0;
+    }
+    if (out_present_sleep_ms != nullptr) {
+        *out_present_sleep_ms = 0.0;
+    }
     pacer.NoteQueued(frame->queued_at);
     const VkPresentModeKHR mode = swapchain.PresentMode();
     const bool allowed =
@@ -461,7 +530,12 @@ bool PresentManager::PaceFrame(Frame* frame, std::stop_token token) {
         // Hold from when the frame is rendered: a frame the GPU finishes late is presented at
         // once rather than counted against the lead.
         Common::Nx2Timeline::Span span{"present: wait for frame render"};
+        const auto fence_start = Clock::now();
         scheduler.GetMasterSemaphore().Wait(frame->render_tick);
+        if (out_fence_wait_ms != nullptr) {
+            *out_fence_wait_ms =
+                std::chrono::duration<double, std::milli>(Clock::now() - fence_start).count();
+        }
     }
     const auto start = Clock::now();
     // 30 FPS and below: no hold. Holding a frame for its refresh kept the GPU thread from
@@ -479,6 +553,7 @@ bool PresentManager::PaceFrame(Frame* frame, std::stop_token token) {
             return false;
         }
         Common::Nx2Timeline::Span span{"present: host pacing hold"};
+        const auto sleep_start = Clock::now();
         for (auto now = start; now < target && !token.stop_requested(); now = Clock::now()) {
             const auto left = target - now;
             if (left > std::chrono::microseconds{1500}) {
@@ -486,6 +561,10 @@ bool PresentManager::PaceFrame(Frame* frame, std::stop_token token) {
             } else {
                 std::this_thread::yield();
             }
+        }
+        if (out_present_sleep_ms != nullptr) {
+            *out_present_sleep_ms =
+                std::chrono::duration<double, std::milli>(Clock::now() - sleep_start).count();
         }
         pacer.NoteHold(Clock::now() - start);
         return true;
@@ -496,6 +575,7 @@ bool PresentManager::PaceFrame(Frame* frame, std::stop_token token) {
         return false;
     }
     Common::Nx2Timeline::Span span{"present: host pacing hold"};
+    const auto sleep_start = Clock::now();
     for (auto now = start; now < target && !token.stop_requested(); now = Clock::now()) {
         const auto left = target - now;
         if (left > std::chrono::microseconds{1500}) {
@@ -503,6 +583,10 @@ bool PresentManager::PaceFrame(Frame* frame, std::stop_token token) {
         } else {
             std::this_thread::yield();
         }
+    }
+    if (out_present_sleep_ms != nullptr) {
+        *out_present_sleep_ms =
+            std::chrono::duration<double, std::milli>(Clock::now() - sleep_start).count();
     }
     pacer.NoteHold(Clock::now() - start);
     return true;

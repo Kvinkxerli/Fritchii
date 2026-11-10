@@ -38,6 +38,13 @@
 #include "video_core/nx2.h"
 #include "video_core/nx2_debug_control.h"
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+#if defined(__x86_64__) || defined(_M_X64)
+#include <immintrin.h>
+#endif
+
 namespace Kernel::Svc {
 namespace {
 
@@ -1047,6 +1054,51 @@ u64 MarkEventObjectForTimeline(KProcess& process, const Svc::ThreadContext& ctx)
     return object;
 }
 
+static void HighResolutionMicroSleep(s64 sleep_us) {
+    if (sleep_us <= 0) {
+        return;
+    }
+#ifdef _WIN32
+    static const s64 frequency = [] {
+        LARGE_INTEGER freq;
+        QueryPerformanceFrequency(&freq);
+        return freq.QuadPart;
+    }();
+    LARGE_INTEGER start, now;
+    QueryPerformanceCounter(&start);
+    const s64 target_ticks = (sleep_us * frequency) / 1'000'000;
+    while (true) {
+        QueryPerformanceCounter(&now);
+        const s64 elapsed = now.QuadPart - start.QuadPart;
+        if (elapsed >= target_ticks) {
+            break;
+        }
+        const s64 remaining_us = ((target_ticks - elapsed) * 1'000'000) / frequency;
+        if (remaining_us > 250) {
+            SwitchToThread();
+        } else {
+            for (int i = 0; i < 16; ++i) {
+#if defined(__x86_64__) || defined(_M_X64)
+                _mm_pause();
+#else
+                YieldProcessor();
+#endif
+            }
+        }
+    }
+#else
+    const auto start = std::chrono::steady_clock::now();
+    const auto target = std::chrono::microseconds(sleep_us);
+    while (std::chrono::steady_clock::now() - start < target) {
+#if defined(__x86_64__) || defined(_M_X64)
+        _mm_pause();
+#else
+        std::this_thread::yield();
+#endif
+    }
+#endif
+}
+
 } // Anonymous namespace
 
 bool IsNx2OotPresentPollSleep(Core::System& system, s64 ns, u64* event_object) {
@@ -1116,11 +1168,11 @@ bool SleepNx2OotPresentPoll(Core::System& system, s64 ns) {
     }
 
     if (mode == 3) {
-        // No GPU wake: just a shorter sleep, at most the one asked for.
+        // High-precision hybrid micro-sleep (EXP24 = 3): avoids Windows thread scheduler descheduling
+        // and 1.5ms timer quantisation stalls during frame presentation.
         state.short_sleeps.fetch_add(1, std::memory_order_relaxed);
-        const s64 sleep_ns = (std::min)(ns, ShortSleepUs() * 1000);
-        static_cast<void>(GetCurrentThread(kernel).Sleep(
-            kernel, kernel.HardwareTimer().GetTick() + sleep_ns + 2));
+        const s64 sleep_us = (std::min)(ns / 1000, ShortSleepUs());
+        HighResolutionMicroSleep(sleep_us);
         std::scoped_lock lk{state.poll_mutex};
         state.pending = PendingOutcome{};
         state.pending.valid = true;

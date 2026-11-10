@@ -65,7 +65,13 @@ BufferCache<P>::BufferCache(Tegra::MaxwellDeviceMemoryManager& device_memory_, R
     const s64 device_local_memory = static_cast<s64>(runtime.GetDeviceLocalMemory());
     const s64 min_spacing_expected = device_local_memory - 1_GiB;
     const s64 min_spacing_critical = device_local_memory - 512_MiB;
-    const s64 mem_threshold = (std::min)(device_local_memory, TARGET_THRESHOLD);
+    s64 target_thresh = TARGET_THRESHOLD;
+    if (device_local_memory <= 4_GiB) {
+        target_thresh = 2_GiB;
+    } else if (device_local_memory <= 6_GiB) {
+        target_thresh = 3_GiB;
+    }
+    const s64 mem_threshold = (std::min)(device_local_memory, target_thresh);
     const s64 min_vacancy_expected = (6 * mem_threshold) / 10;
     const s64 min_vacancy_critical = (2 * mem_threshold) / 10;
     minimum_memory = static_cast<u64>(

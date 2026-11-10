@@ -15,14 +15,37 @@ namespace Common::ThreadPinning {
 namespace {
 
 // The first two cores that do not hold logical processor 0 go to the GPU threads.
-Plan Assign(std::span<const Core> cores) {
+// On hybrid CPUs with 4 P-cores (e.g. Alder Lake i5-12450H), the 4 guest cores are assigned 1:1
+// to each physical P-core to eliminate SMT contention, while GPU threads share the P-cores.
+Plan Assign(std::span<const Core> cores, std::span<const Core> efficiency_cores = {}) {
     Plan plan;
-    std::vector<u64> gpu;
     u64 all = 0;
+    for (const Core& core : cores) {
+        all |= core.mask;
+    }
+    for (const Core& core : efficiency_cores) {
+        plan.efficiency_mask |= core.mask;
+    }
+    plan.chosen_cores = cores.size();
+
+    if (cores.size() == 4 && !efficiency_cores.empty()) {
+        for (size_t i = 0; i < 4; ++i) {
+            plan.guest_cores[i] = cores[i].mask;
+        }
+        plan.guest = all;
+        plan.front = all;
+        plan.back = all;
+        return plan;
+    }
+
+    std::vector<u64> gpu;
+    std::vector<u64> guest_core_list;
     for (const Core& core : cores) {
         all |= core.mask;
         if ((core.mask & 1) == 0 && gpu.size() < 2) {
             gpu.push_back(core.mask);
+        } else {
+            guest_core_list.push_back(core.mask);
         }
     }
     if (gpu.size() < 2) {
@@ -31,7 +54,9 @@ Plan Assign(std::span<const Core> cores) {
     plan.front = gpu[0];
     plan.back = gpu[1];
     plan.guest = all & ~(plan.front | plan.back);
-    plan.chosen_cores = cores.size();
+    for (size_t i = 0; i < 4 && i < guest_core_list.size(); ++i) {
+        plan.guest_cores[i] = guest_core_list[i];
+    }
     return plan;
 }
 
@@ -39,10 +64,10 @@ bool Qualifies(const Plan& plan, Mode mode) {
     if (mode == Mode::Force) {
         return plan.Enabled() && plan.chosen_cores >= MinForcedCores;
     }
-    const auto guest_threads = static_cast<std::size_t>(std::popcount(plan.guest));
-    if (plan.efficiency_cores > 0 && plan.chosen_cores >= MinForcedCores && guest_threads >= std::size_t{4}) {
+    if (plan.efficiency_cores > 0 && plan.chosen_cores >= MinForcedCores) {
         return plan.Enabled();
     }
+    const auto guest_threads = static_cast<std::size_t>(std::popcount(plan.guest));
     return plan.Enabled() && plan.chosen_cores >= MinAutoCores &&
            guest_threads >= MinAutoGuestProcessors;
 }
@@ -67,9 +92,12 @@ Plan MakePlan(const Topology& topology, Mode mode) {
     const u8 fastest =
         std::ranges::max(topology.cores, {}, &Core::efficiency_class).efficiency_class;
     std::vector<Core> performance;
+    std::vector<Core> efficiency;
     for (const Core& core : topology.cores) {
         if (core.efficiency_class == fastest) {
             performance.push_back(core);
+        } else {
+            efficiency.push_back(core);
         }
     }
     none.performance_cores = performance.size();
@@ -121,7 +149,7 @@ Plan MakePlan(const Topology& topology, Mode mode) {
         }
         // No single L3 has enough cores (Zen 2 CCXs): span them as before.
     }
-    if (Plan plan = prepare(Assign(performance)); Qualifies(plan, mode)) {
+    if (Plan plan = prepare(Assign(performance, efficiency)); Qualifies(plan, mode)) {
         return finish(plan, groups.size() == 1 ? groups.front().size : 0);
     }
     return none;
@@ -147,11 +175,14 @@ std::string Describe(const Plan& plan, const Topology& topology, Mode mode) {
                            "processors to the guest cores, EDEN_NX2_PIN_THREADS=1 forces from {}",
                            cpu, MinAutoCores, MinAutoGuestProcessors, MinForcedCores);
     }
-    const std::string where =
+    std::string where =
         plan.l3_caches >= 2
             ? (plan.l3_size != 0 ? fmt::format(" in one {} MiB L3", plan.l3_size >> 20)
                                  : std::string{" across L3 caches"})
             : std::string{};
+    if (plan.efficiency_mask != 0) {
+        where += fmt::format(", background on E-cores {:#x}", plan.efficiency_mask);
+    }
     return fmt::format("GPU front {:#x}, GPU back {:#x}, guest cores {:#x} (on {} cores{}); {}",
                        plan.front, plan.back, plan.guest, plan.chosen_cores, where, cpu);
 }

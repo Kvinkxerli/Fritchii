@@ -822,22 +822,24 @@ bool GpuSplit::WaitFor(u64 target, DrainSite site) {
 }
 
 void GpuSplit::Backoff(u32 spins, u64 target) {
-    if (spins < 16384) {
+    if (spins < 1024) {
         Pause();
         return;
     }
-    if (!Nx2Perf::On(Nx2Perf::Opt::FrontSleep) || !back_running.load(std::memory_order_acquire)) {
-        std::this_thread::yield();
+    if (back_running.load(std::memory_order_acquire)) {
+        front_waiting.store(true, std::memory_order_seq_cst);
+        const u32 seen = front_wake.load(std::memory_order_seq_cst);
+        if (consumed.load(std::memory_order_seq_cst) < target) {
+            front_wake.wait(seen, std::memory_order_seq_cst);
+        }
+        front_waiting.store(false, std::memory_order_relaxed);
         return;
     }
-    // A long wait sleeps until the back stores a new position (port of #161's front_wake): the
-    // back checks front_waiting after each store, the front checks the position after setting it.
-    front_waiting.store(true, std::memory_order_seq_cst);
-    const u32 seen = front_wake.load(std::memory_order_seq_cst);
-    if (consumed.load(std::memory_order_seq_cst) < target) {
-        front_wake.wait(seen, std::memory_order_seq_cst);
+    if (spins < 4096) {
+        std::this_thread::yield();
+    } else {
+        std::this_thread::sleep_for(std::chrono::microseconds(50));
     }
-    front_waiting.store(false, std::memory_order_relaxed);
 }
 
 void GpuSplit::SwitchEngine(Tegra::Engines::EngineInterface* engine) {

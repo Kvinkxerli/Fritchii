@@ -730,34 +730,40 @@ void PinCurrentThread(PinnedRole role, int guest_core) {
         return result;
     }();
     u64 mask{};
+    int priority = THREAD_PRIORITY_NORMAL;
     switch (role) {
     case PinnedRole::GpuFront:
         mask = plan.front;
+        priority = THREAD_PRIORITY_HIGHEST;
         break;
     case PinnedRole::GpuBack:
         mask = plan.back;
+        priority = THREAD_PRIORITY_ABOVE_NORMAL;
         break;
     case PinnedRole::GuestCore: {
         mask = plan.guest;
-        // EDEN_NX2_GUEST_PIN_EACH=1: one physical core each (the guest cores' JIT code was 73-80%
-        // of their busy time at Castle Town; two on one core's SMT siblings share its units).
-        static const std::vector<u64> guest_cores = [] {
-            std::vector<u64> masks;
-            const char* value = std::getenv("EDEN_NX2_GUEST_PIN_EACH");
-            if (plan.guest == 0 || value == nullptr || value[0] != '1') {
-                return masks;
-            }
-            for (const ThreadPinning::Core& core : ReadPinningTopology().cores) {
-                if (core.mask != 0 && (core.mask & ~plan.guest) == 0) {
-                    masks.push_back(core.mask);
+        priority = THREAD_PRIORITY_HIGHEST;
+        if (guest_core >= 0 && static_cast<size_t>(guest_core) < plan.guest_cores.size() &&
+            plan.guest_cores[guest_core] != 0) {
+            mask = plan.guest_cores[guest_core];
+        } else {
+            // EDEN_NX2_GUEST_PIN_EACH=1: one physical core each fallback
+            static const std::vector<u64> guest_cores = [] {
+                std::vector<u64> masks;
+                const char* value = std::getenv("EDEN_NX2_GUEST_PIN_EACH");
+                if (plan.guest == 0 || value == nullptr || value[0] != '1') {
+                    return masks;
                 }
+                for (const ThreadPinning::Core& core : ReadPinningTopology().cores) {
+                    if (core.mask != 0 && (core.mask & ~plan.guest) == 0) {
+                        masks.push_back(core.mask);
+                    }
+                }
+                return masks;
+            }();
+            if (guest_core >= 0 && !guest_cores.empty()) {
+                mask = guest_cores[static_cast<size_t>(guest_core) % guest_cores.size()];
             }
-            LOG_INFO(Common, "Thread pinning: each guest core on its own physical core ({} cores)",
-                     masks.size());
-            return masks;
-        }();
-        if (guest_core >= 0 && !guest_cores.empty()) {
-            mask = guest_cores[static_cast<size_t>(guest_core) % guest_cores.size()];
         }
         break;
     }
@@ -771,14 +777,27 @@ void PinCurrentThread(PinnedRole role, int guest_core) {
         } else if (role != PinnedRole::GuestCore) {
             pinned_gpu_mask.fetch_or(mask, std::memory_order_relaxed);
         }
+        SetThreadPriority(GetCurrentThread(), priority);
     }
 #else
     (void)role;
+    (void)guest_core;
 #endif
 }
 
 u64 BackgroundWorkCpuMask() {
 #ifdef _WIN32
+    if (const WindowsCpuSets& sets = CpuSets(); sets.hybrid && !sets.efficiency.empty()) {
+        u64 eff_mask = 0;
+        for (const ULONG id : sets.efficiency) {
+            if (id < 64) {
+                eff_mask |= 1ULL << id;
+            }
+        }
+        if (eff_mask != 0) {
+            return eff_mask;
+        }
+    }
     const u64 pinned = pinned_gpu_mask.load(std::memory_order_relaxed);
     if (pinned == 0) {
         return 0;
@@ -823,6 +842,33 @@ void SetCurrentThreadCpuMask(u64 mask) {
 #endif
 }
 
+#ifdef _WIN32
+static void EnableCurrentThreadEcoQoS() {
+    // Windows 11 / Windows 10 21H2+ thread power throttling (EcoQoS)
+    typedef enum _THREAD_INFORMATION_CLASS_EXT {
+        ThreadPowerThrottlingExt = 4
+    } THREAD_INFORMATION_CLASS_EXT;
+
+    typedef struct _THREAD_POWER_THROTTLING_STATE_EXT {
+        ULONG Version;
+        ULONG ControlMask;
+        ULONG StateMask;
+    } THREAD_POWER_THROTTLING_STATE_EXT;
+
+    using PFN_SetThreadInformation = BOOL(WINAPI*)(HANDLE, DWORD, PVOID, DWORD);
+    static const auto set_thread_info = reinterpret_cast<PFN_SetThreadInformation>(reinterpret_cast<void*>(
+        GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetThreadInformation")));
+    if (set_thread_info != nullptr) {
+        THREAD_POWER_THROTTLING_STATE_EXT state = {
+            .Version = 1, // THREAD_POWER_THROTTLING_CURRENT_VERSION
+            .ControlMask = 0x1, // THREAD_POWER_THROTTLING_EXECUTION_SPEED
+            .StateMask = 0x1,
+        };
+        set_thread_info(GetCurrentThread(), ThreadPowerThrottlingExt, &state, sizeof(state));
+    }
+}
+#endif
+
 void SetCurrentThreadIdlePriority() {
 #ifdef _WIN32
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_IDLE);
@@ -839,8 +885,13 @@ void SetCurrentThreadToEfficiencyCores() {
     }
     SetCurrentThreadCoreGroup(CoreGroup::Efficiency);
 #elif defined(_WIN32)
+    EnableCurrentThreadEcoQoS();
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
     if (const WindowsCpuSets& sets = CpuSets(); sets.hybrid) {
         SelectCurrentThreadCpuSets(sets.efficiency);
+    }
+    if (const u64 bg_mask = BackgroundWorkCpuMask(); bg_mask != 0) {
+        SetCurrentThreadCpuMask(bg_mask);
     }
 #endif
 }
@@ -850,8 +901,13 @@ void SetCurrentThreadToBackgroundWork() {
     ADPF::AddCurrentThread(ADPF::Session::Background);
     SetCurrentThreadCoreGroup(CoreGroup::Unrestricted);
 #elif defined(_WIN32)
+    EnableCurrentThreadEcoQoS();
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
     if (const WindowsCpuSets& sets = CpuSets(); sets.hybrid) {
-        SelectCurrentThreadCpuSets({});
+        SelectCurrentThreadCpuSets(sets.efficiency);
+    }
+    if (const u64 bg_mask = BackgroundWorkCpuMask(); bg_mask != 0) {
+        SetCurrentThreadCpuMask(bg_mask);
     }
 #endif
 }

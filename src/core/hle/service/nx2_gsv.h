@@ -2043,8 +2043,9 @@ private:
         // Ocarina of Time's 30 FPS mode (lower-end PCs): two vblanks a frame. Its frame step
         // follows the time measured (Dynamic FPS by Dark), so it keeps full speed.
         constexpr u64 OcarinaOfTimeId = 0x0400486024DEC000ULL;
+        const char* const oot_env = std::getenv("EDEN_NX2_OOT_30FPS");
         const bool oot_30 = Settings::values.oot_30fps.GetValue() ||
-                            std::getenv("EDEN_NX2_OOT_30FPS") != nullptr;
+                            (oot_env != nullptr && std::strcmp(oot_env, "0") != 0);
         if (process != nullptr && process->GetProgramId() == OcarinaOfTimeId && oot_30) {
             swap_interval = (std::max)(swap_interval, 2U);
         }

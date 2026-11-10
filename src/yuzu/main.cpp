@@ -190,8 +190,7 @@ constexpr std::pair<const char*, const char*> BuiltinSwitches[] = {
     {"EDEN_NX2_SEM_FAST", "2"},           {"EDEN_NX2_EXP12", "1"},
     {"EDEN_NX2_EXP24", "3"},              {"EDEN_NX2_EXP22", "7"},
     {"EDEN_NX2_EXP25", "1"},              {"EDEN_NX2_EXP26", "3"},
-    {"EDEN_NX2_EXP28", "3"},              {"EDEN_NX2_PIN_THREADS", "1"},
-    {"EDEN_NX2_OOT_30FPS", "1"},          {"EDEN_NX2_IDLE_PAUSE", "1"},
+    {"EDEN_NX2_EXP28", "3"},              {"EDEN_NX2_IDLE_PAUSE", "1"},
     {"EDEN_NX2_ARB_SPIN", "8"},           {"EDEN_NX2_TRANSCODE_THREADS", "4"},
 };
 
