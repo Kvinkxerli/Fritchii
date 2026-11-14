@@ -342,7 +342,7 @@ VkResult MemoryAllocator::AllocateImage(const VkImageCreateInfo &ci, bool dedica
 
 void MemoryAllocator::NoteHostPlacement(VmaAllocation allocation, VkDeviceSize size,
                                         bool is_image) const {
-    if (!device.IsDiscrete()) {
+    if (allocation == VK_NULL_HANDLE || device.IsIntegrated()) {
         return;
     }
     VkMemoryPropertyFlags property_flags{};
