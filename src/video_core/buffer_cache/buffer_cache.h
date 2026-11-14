@@ -3663,7 +3663,6 @@ typename BufferCache<P>::OverlapResult BufferCache<P>::ResolveOverlaps(DAddr dev
         }
         overlap_ids.push_back(overlap_id);
         overlap.Pick();
-        const DAddr overlap_device_addr = overlap.CpuAddr();
         const bool expands_left = overlap_device_addr < begin;
         if (expands_left) {
             begin = overlap_device_addr;
