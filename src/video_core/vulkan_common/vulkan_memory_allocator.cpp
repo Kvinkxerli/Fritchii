@@ -333,9 +333,46 @@ VkResult MemoryAllocator::AllocateImage(const VkImageCreateInfo &ci, bool dedica
         );
     }
 
+    NoteHostPlacement(allocation, alloc_info.size, true);
+
     image = vk::Image(handle, ci.usage, *device.GetLogical(), allocator, allocation,
                       device.GetDispatchLoader());
     return VK_SUCCESS;
+}
+
+void MemoryAllocator::NoteHostPlacement(VmaAllocation allocation, VkDeviceSize size,
+                                        bool is_image) const {
+    if (!device.IsDiscrete()) {
+        return;
+    }
+    VkMemoryPropertyFlags property_flags{};
+    vmaGetAllocationMemoryProperties(allocator, allocation, &property_flags);
+    if ((property_flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0) {
+        return;
+    }
+    const u64 total = spilled_bytes.fetch_add(size, std::memory_order_relaxed) + size;
+    // Not a pressure event: taking +512 MiB each took the margin to 1.5 GiB while a scene loaded
+    // on that laptop and kept the cache under the scene's working set for minutes (ASTC decodes
+    // 55/s -> 950/s). The texture cache takes the bytes and sizes its answer to them
+    // (TextureCache::TickFrame).
+    spill_pending.fetch_add(size, std::memory_order_relaxed);
+    // The first ones, then at most one every 2 s.
+    constexpr s64 Interval = std::chrono::nanoseconds{std::chrono::seconds{2}}.count();
+    const s64 now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count();
+    bool log = spill_logged.fetch_add(1, std::memory_order_relaxed) < 32;
+    if (!log) {
+        s64 last = last_spill_log.load(std::memory_order_relaxed);
+        log = now - last >= Interval &&
+              last_spill_log.compare_exchange_strong(last, now, std::memory_order_relaxed);
+    }
+    if (log) {
+        LOG_WARNING(Render_Vulkan,
+                    "Device-local {} of {} KiB placed in host memory (device heap over budget; "
+                    "{} MiB so far)",
+                    is_image ? "image" : "buffer", size >> 10, total >> 20);
+    }
 }
 
 vk::Image MemoryAllocator::CreateUnbackedImage(const VkImageCreateInfo &ci, bool aliased) const {
@@ -476,6 +513,9 @@ vk::Buffer MemoryAllocator::CreateBuffer(const VkBufferCreateInfo &ci, MemoryUsa
         vk::Check(result);
     }
     vmaGetAllocationMemoryProperties(allocator, allocation, &property_flags);
+    if (usage == MemoryUsage::DeviceLocal) {
+        NoteHostPlacement(allocation, alloc_info.size, false);
+    }
 
     // Log GPU memory allocation for buffers
     if (GPU::Logging::IsActive() &&
@@ -533,6 +573,9 @@ vk::Buffer MemoryAllocator::CreateBuffer(const VkBufferCreateInfo &ci, MemoryUsa
     vk::Check(vmaCreateBufferWithAlignment(allocator, &ci, &alloc_ci, min_alignment, &handle,
                                            &allocation, &alloc_info));
     vmaGetAllocationMemoryProperties(allocator, allocation, &property_flags);
+    if (usage == MemoryUsage::DeviceLocal) {
+        NoteHostPlacement(allocation, alloc_info.size, false);
+    }
 
     u8 *data = reinterpret_cast<u8 *>(alloc_info.pMappedData);
     std::span<u8> mapped_data{};

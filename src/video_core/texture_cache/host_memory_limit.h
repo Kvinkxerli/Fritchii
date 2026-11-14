@@ -14,8 +14,9 @@ namespace VideoCommon {
 constexpr u64 HostCommitReserve = u64{2} << 30;
 
 /// The cache is not shrunk below this for host memory: a scene needs about this much, and under
-/// it the collector only deletes and decodes the same textures again.
-constexpr u64 MinHostCriticalMemory = u64{3} << 30;
+/// it the collector only deletes and decodes the same textures again. On 4-6 GB GPUs or 16 GB RAM PCs,
+/// 2 GiB leaves critical room for system commit and avoids host memory exhaustion.
+constexpr u64 MinHostCriticalMemory = u64{2} << 30;
 
 /// The most device memory the texture cache may hold before it collects in earnest, as host
 /// memory allows it. Windows charges device memory to the system's commit limit (RAM plus the

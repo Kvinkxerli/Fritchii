@@ -158,6 +158,15 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
     u64 pressure_margin{};        ///< Extra room under the budget after images did not fit
     u64 pressure_quiet_frames{};  ///< Frames since the last such image
     u64 slack_margin{};           ///< Extra room for allocator block space the driver counts as used
+    u64 spill_margin{};           ///< Extra room under the budget after device memory spilled
+    u64 spill_window_start{};     ///< frame_tick of the current spill window
+    u64 spill_window_bytes{};     ///< Spilled bytes in this window
+    u64 spill_quiet_frames{};     ///< Frames since any spill
+    u64 spill_collect_tick{};     ///< frame_tick + 1 when the current spill episode began
+    u32 spill_forced_collects{};  ///< Forced collects done this episode (at most MaxSpillCollects)
+    u64 spill_last_collect{};     ///< frame_tick of the last forced collect of this episode
+    u64 spill_log_bytes{};        ///< Spilled bytes since the last "Host spill:" line
+    u32 spill_log_collects{};     ///< Forced collects since the last "Host spill:" line
     u64 astc_opaque_images{};
     u64 astc_alpha_images{};
     std::vector<u8> astc_scan_buffer;

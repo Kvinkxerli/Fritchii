@@ -475,17 +475,17 @@ void TextureCache<P>::ApplyThresholdOverrides(bool log) {
     if constexpr (requires { runtime.GetDeviceLocalMemory(); }) {
         const u64 local_mem = runtime.GetDeviceLocalMemory();
         if (local_mem <= 4_GiB) {
-            max_critical = 2600_MiB;
+            max_critical = 2400_MiB;
         } else if (local_mem <= 6_GiB) {
-            max_critical = 3800_MiB;
+            max_critical = 3600_MiB;
         }
     }
     if constexpr (requires { runtime.GetDeviceMemoryBudget(); }) {
         const u64 budget = runtime.GetDeviceMemoryBudget();
         if (budget <= 4_GiB) {
-            max_critical = (std::min)(max_critical, budget * 7 / 10);
+            max_critical = (std::min)(max_critical, budget * 65 / 100);
         } else if (budget <= 6_GiB) {
-            max_critical = (std::min)(max_critical, budget * 3 / 4);
+            max_critical = (std::min)(max_critical, budget * 7 / 10);
         } else {
             max_critical = (std::max)(max_critical, budget / 8 * 5);
             // Cards with 10 GiB or more of budget: 5/8 left ~7.3 GiB on a 12 GB RX 6700 XT, under what
@@ -508,8 +508,8 @@ void TextureCache<P>::ApplyThresholdOverrides(bool log) {
     // free instead of ~1.5 since Windows charges device memory to commit, 58.8 fps over 30 min).
     if (const char* value = std::getenv("EDEN_NX2_TC_CEILING_MIB")) {
         const u64 ceiling = std::strtoull(value, nullptr, 10) << 20;
-        if (ceiling >= 2_GiB) {
-            critical_memory = (std::min)(critical_memory, ceiling);
+        if (ceiling >= 2_GiB && ceiling < critical_memory) {
+            critical_memory = ceiling;
             expected_memory = (std::min)(expected_memory, ceiling - 1536_MiB);
             minimum_memory = (std::min)(minimum_memory,
                                         expected_memory - (std::min)(expected_memory, u64{1_GiB}));
@@ -537,6 +537,7 @@ void TextureCache<P>::TickFrame() {
             scratch->release();
         }
     }
+    bool spill_collect = false; ///< Memory spilled to host memory: collect hard this frame
     if constexpr (HAS_DEVICE_MEMORY_INFO) {
         // Switch 2 titles (native tiling) stream far more texture data than Eden's thresholds
         // were tuned for: title 1's attract loop alone keeps ~5.3 GB resident, so the collector
@@ -579,6 +580,75 @@ void TextureCache<P>::TickFrame() {
                     }
                 }
             }
+            if constexpr (requires { runtime.TakeSpilledBytes(); }) {
+                // Device-local memory the allocator placed in host memory (heap over its
+                // budget, discrete GPU). RTX 3050/4050 Laptop in title 1's Castle Town and Hyrule:
+                // 290-420 MiB spilled for minutes, 50-57 -> 20-26 fps. Answering each spill like an
+                // out-of-memory event (+512 MiB) took the margin to 1.5 GiB while the scene
+                // loaded (the old scene still resident) and left the cache under the new
+                // scene's working set: ASTC decodes 55/s -> 950/s, no better fps. So, per
+                // episode: first a few forced collects; only if it still spills after them,
+                // a margin of what spilled in the last ~2 s plus 128 MiB (at most 768 MiB),
+                // which shrinks by 128 MiB every 240 quiet frames.
+                if (native_thresholds_applied) {
+                    constexpr u64 SpillWindowFrames = 120;
+                    constexpr u64 SpillGraceFrames = 60;
+                    constexpr u64 SpillCollectSpacing = 15;
+                    constexpr u32 MaxSpillCollects = 4;
+                    constexpr u64 SpillDecayFrames = 240;
+                    constexpr u64 SpillEpisodeEndFrames = 300;
+                    const u64 spilled = runtime.TakeSpilledBytes();
+                    if (frame_tick - spill_window_start >= SpillWindowFrames) {
+                        spill_window_start = frame_tick;
+                        spill_window_bytes = 0;
+                    }
+                    spill_log_bytes += spilled;
+                    if (spilled != 0) {
+                        spill_window_bytes += spilled;
+                        spill_quiet_frames = 0;
+                        if (spill_collect_tick == 0) {
+                            spill_collect_tick = frame_tick + 1;
+                        }
+                        // The forced collects run only on frames that spill, so a sparse
+                        // episode may still have some left after the grace period: use them
+                        // all before raising the margin.
+                        const u64 since = frame_tick + 1 - spill_collect_tick;
+                        if (spill_forced_collects < MaxSpillCollects) {
+                            if (spill_forced_collects == 0 ||
+                                frame_tick >= spill_last_collect + SpillCollectSpacing) {
+                                spill_last_collect = frame_tick;
+                                ++spill_forced_collects;
+                                ++spill_log_collects;
+                                spill_collect = true;
+                            }
+                        } else if (since >= SpillGraceFrames) {
+                            const u64 target = (std::min)(spill_window_bytes + 128_MiB, 768_MiB);
+                            if (target > spill_margin) {
+                                spill_margin = target;
+                                budget_check_frames = 0; // thresholds are recomputed below
+                                LOG_WARNING(HW_GPU,
+                                            "Still spilling to host memory after {} forced "
+                                            "collects: keeping {} MiB more free",
+                                            spill_forced_collects, spill_margin >> 20);
+                            }
+                        }
+                    } else if (spill_margin != 0 && ++spill_quiet_frames % SpillDecayFrames == 0) {
+                        spill_margin -= (std::min)(spill_margin, 128_MiB);
+                        budget_check_frames = 0;
+                    }
+                    if (spill_log_bytes != 0 && frame_tick % 600 == 0) {
+                        LOG_INFO(HW_GPU, "Host spill: {} MiB, {} forced collects, margin {} MiB",
+                                 spill_log_bytes >> 20, spill_log_collects, spill_margin >> 20);
+                        spill_log_bytes = 0;
+                        spill_log_collects = 0;
+                    }
+                    if (spill_collect_tick != 0 &&
+                        frame_tick + 1 - spill_collect_tick >= SpillEpisodeEndFrames) {
+                        spill_collect_tick = 0;
+                        spill_forced_collects = 0;
+                    }
+                }
+            }
             if (native_thresholds_applied && budget_check_frames++ % 30 == 0) {
                 const u64 budget = runtime.GetDeviceMemoryBudget();
                 if (budget > 2_GiB) {
@@ -596,8 +666,9 @@ void TextureCache<P>::TickFrame() {
                                            ? slack
                                            : slack_margin - (std::min)(slack_margin - slack, 16_MiB);
                     }
+                    const u64 active_margin = (std::max)(pressure_margin, spill_margin);
                     critical_memory =
-                        budget - (std::min)(margin + pressure_margin + slack_margin, budget / 2);
+                        budget - (std::min)(margin + active_margin + slack_margin, budget / 2);
                     // zortos293/Lichii#1210: the device's budget is not all the room there is.
                     // Windows charges device memory to the system's commit limit, so the cache
                     // may also hold no more than the device memory in use plus the commit still
@@ -626,8 +697,8 @@ void TextureCache<P>::TickFrame() {
                                  expected_memory >> 20, critical_memory >> 20,
                                  minimum_memory >> 20);
                         LOG_INFO(HW_GPU,
-                                 "Memory margins: base {} MiB, out of memory {} MiB, block slack {} MiB",
-                                 margin >> 20, pressure_margin >> 20, slack_margin >> 20);
+                                 "Memory margins: base {} MiB, out of memory {} MiB, spill {} MiB, block slack {} MiB",
+                                 margin >> 20, pressure_margin >> 20, spill_margin >> 20, slack_margin >> 20);
                         if (commit_room) {
                             LOG_INFO(HW_GPU, "Host memory: {} MiB of commit left, {}",
                                      *commit_room >> 20,
@@ -793,8 +864,8 @@ void TextureCache<P>::TickFrame() {
         out_of_memory = failed != seen_failed_images;
         seen_failed_images = failed;
     }
-    if (out_of_memory || total_used_memory > minimum_memory) {
-        RunGarbageCollector(out_of_memory);
+    if (out_of_memory || spill_collect || total_used_memory > minimum_memory) {
+        RunGarbageCollector(out_of_memory || spill_collect);
     }
     if (out_of_memory) {
         // Textures left out for lack of memory are made again on their next read, once a frame

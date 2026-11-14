@@ -143,6 +143,11 @@ public:
         return memory_allocator.FailedImages();
     }
 
+    /// Device-local bytes placed in host memory since the last call (see MemoryAllocator).
+    u64 TakeSpilledBytes() const noexcept {
+        return memory_allocator.TakeSpilledBytes();
+    }
+
     /// EDEN_NX2_EXP42 (fable_answer_12 2B): VkImages of deleted render targets, kept once the
     /// GPU is done with them for the next image made with the same create info. A null image
     /// when none is pooled (or the switch is off).
