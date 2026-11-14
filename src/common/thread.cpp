@@ -744,27 +744,14 @@ void PinCurrentThread(PinnedRole role, int guest_core) {
         break;
     case PinnedRole::GuestCore: {
         mask = plan.guest;
-        priority = THREAD_PRIORITY_HIGHEST;
-        if (guest_core >= 0 && static_cast<size_t>(guest_core) < plan.guest_cores.size() &&
-            plan.guest_cores[guest_core] != 0) {
-            mask = plan.guest_cores[guest_core];
-        } else {
-            // EDEN_NX2_GUEST_PIN_EACH=1: one physical core each fallback
-            static const std::vector<u64> guest_cores = [] {
-                std::vector<u64> masks;
-                const char* value = std::getenv("EDEN_NX2_GUEST_PIN_EACH");
-                if (plan.guest == 0 || value == nullptr || value[0] != '1') {
-                    return masks;
-                }
-                for (const ThreadPinning::Core& core : ReadPinningTopology().cores) {
-                    if (core.mask != 0 && (core.mask & ~plan.guest) == 0) {
-                        masks.push_back(core.mask);
-                    }
-                }
-                return masks;
-            }();
-            if (guest_core >= 0 && !guest_cores.empty()) {
-                mask = guest_cores[static_cast<size_t>(guest_core) % guest_cores.size()];
+        priority = THREAD_PRIORITY_ABOVE_NORMAL;
+        // Float across the performance pool so Intel Thread Director & Windows scheduler
+        // can dynamically balance emulated cores away from core 0 when DPCs arrive.
+        // EDEN_NX2_GUEST_PIN_EACH=1: opt-in to strict 1:1 physical core affinity.
+        if (const char* each = std::getenv("EDEN_NX2_GUEST_PIN_EACH"); each && each[0] == '1') {
+            if (guest_core >= 0 && static_cast<size_t>(guest_core) < plan.guest_cores.size() &&
+                plan.guest_cores[guest_core] != 0) {
+                mask = plan.guest_cores[guest_core];
             }
         }
         break;
@@ -789,17 +776,8 @@ void PinCurrentThread(PinnedRole role, int guest_core) {
 
 u64 BackgroundWorkCpuMask() {
 #ifdef _WIN32
-    if (const WindowsCpuSets& sets = CpuSets(); sets.hybrid && !sets.efficiency.empty()) {
-        u64 eff_mask = 0;
-        for (const ULONG id : sets.efficiency) {
-            if (id < 64) {
-                eff_mask |= 1ULL << id;
-            }
-        }
-        if (eff_mask != 0) {
-            return eff_mask;
-        }
-    }
+    // On hybrid CPUs, allow background workers to freely use all available cores
+    // without locking them exclusively to E-cores, ensuring fast compilation & decompression.
     const u64 pinned = pinned_gpu_mask.load(std::memory_order_relaxed);
     if (pinned == 0) {
         return 0;
@@ -887,14 +865,9 @@ void SetCurrentThreadToEfficiencyCores() {
     }
     SetCurrentThreadCoreGroup(CoreGroup::Efficiency);
 #elif defined(_WIN32)
-    EnableCurrentThreadEcoQoS();
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-    if (const WindowsCpuSets& sets = CpuSets(); sets.hybrid) {
-        SelectCurrentThreadCpuSets(sets.efficiency);
-    }
-    if (const u64 bg_mask = BackgroundWorkCpuMask(); bg_mask != 0) {
-        SetCurrentThreadCpuMask(bg_mask);
-    }
+    // Run at normal priority without EcoQoS throttling so background work completes fast
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
+    SelectCurrentThreadCpuSets({});
 #endif
 }
 
@@ -903,14 +876,9 @@ void SetCurrentThreadToBackgroundWork() {
     ADPF::AddCurrentThread(ADPF::Session::Background);
     SetCurrentThreadCoreGroup(CoreGroup::Unrestricted);
 #elif defined(_WIN32)
-    EnableCurrentThreadEcoQoS();
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-    if (const WindowsCpuSets& sets = CpuSets(); sets.hybrid) {
-        SelectCurrentThreadCpuSets(sets.efficiency);
-    }
-    if (const u64 bg_mask = BackgroundWorkCpuMask(); bg_mask != 0) {
-        SetCurrentThreadCpuMask(bg_mask);
-    }
+    // Allow background compilation and decoding to utilize all cores at full clock speed
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
+    SelectCurrentThreadCpuSets({});
 #endif
 }
 

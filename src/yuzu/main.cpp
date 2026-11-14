@@ -201,6 +201,9 @@ constexpr std::pair<const char*, const char*> BuiltinSwitches[] = {
     {"EDEN_NX2_TC_CEILING_MIB", "7680"},
     // Idle CPU cores compile ahead game code:
     {"EDEN_NX2_JIT_WARM", "1"},
+    // Ocarina of Time: unlock high refresh (60 FPS) and distribute guest threads across all cores:
+    {"EDEN_NX2_OOT_HIGH_REFRESH", "1"},
+    {"EDEN_NX2_OOT_WIDE_AFFINITY", "1"},
 };
 
 static void LoadNx2Switches(const char* argv0) {
