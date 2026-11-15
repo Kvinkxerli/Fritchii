@@ -134,6 +134,12 @@ public:
 
     bool CanReportMemoryUsage() const;
 
+    /// The texture cache's budget check (every 30 frames): device memory in use against the
+    /// driver's budget. Sustained use over it leaves one more top mip level out of the
+    /// re-compressed ASTC textures made from then on.
+    void NoteBudgetPressure(u64 usage, u64 budget);
+    u32 over_budget_checks{};
+
     /// Images that did not fit the device memory budget so far (see MemoryAllocator).
     u32 MemoryPressureEvents() const noexcept {
         return memory_allocator.MemoryPressureEvents();

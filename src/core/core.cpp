@@ -571,9 +571,12 @@ struct System::Impl {
         Common::NoteShutdownProgress();
         host1x_core.reset();
         perf_stats.reset();
+        Common::NoteShutdownProgress();
         cpu_manager.Shutdown();
         debugger.reset();
+        Common::NoteShutdownProgress();
         kernel.Shutdown();
+        Common::NoteShutdownProgress();
         stop_event = {};
         Network::RestartSocketOperations();
 

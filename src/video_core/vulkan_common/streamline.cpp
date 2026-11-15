@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <optional>
@@ -70,9 +72,29 @@ void LogFromStreamline(sl::LogType type, const char* message) {
     case sl::LogType::eError:
         LOG_ERROR(Render_Vulkan, "Streamline: {}", text);
         break;
-    case sl::LogType::eWarn:
-        LOG_WARNING(Render_Vulkan, "Streamline: {}", text);
+    case sl::LogType::eWarn: {
+        static std::atomic<u32> warn_count{};
+        static std::atomic<s64> last_warn_log{};
+        const bool is_vram_warn = text.find("Exceeded VRAM budget") != std::string_view::npos;
+        if (is_vram_warn) {
+            constexpr s64 Interval = std::chrono::nanoseconds{std::chrono::seconds{10}}.count();
+            const s64 now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                std::chrono::steady_clock::now().time_since_epoch())
+                                .count();
+            bool log = warn_count.fetch_add(1, std::memory_order_relaxed) < 8;
+            if (!log) {
+                s64 last = last_warn_log.load(std::memory_order_relaxed);
+                log = now - last >= Interval &&
+                      last_warn_log.compare_exchange_strong(last, now, std::memory_order_relaxed);
+            }
+            if (log) {
+                LOG_WARNING(Render_Vulkan, "Streamline: {} (throttled)", text);
+            }
+        } else {
+            LOG_WARNING(Render_Vulkan, "Streamline: {}", text);
+        }
         break;
+    }
     default:
         if (LogLevel() > 0) {
             LOG_INFO(Render_Vulkan, "Streamline: {}", text);

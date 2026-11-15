@@ -290,7 +290,9 @@ private:
                   StartGameType with_config = StartGameType::Normal);
     void BootGameFromList(const QString& filename, StartGameType with_config);
     void ShutdownGame();
-    void TerminateEmulationThread();
+    /// Ends the process when the emulation thread is still running: called once its teardown can
+    /// no longer be waited for. Does not return in that case.
+    void AbandonEmulationThread();
 
     void SetDiscordEnabled(bool state);
     void LoadAmiibo(const QString& filename);
@@ -563,6 +565,7 @@ private:
     QTimer shutdown_timer;
     QTimer emu_terminate_timer;
     QElapsedTimer emu_force_stop_clock;
+    QElapsedTimer emu_progress_clock;
     u64 shutdown_progress_seen{};
     OverlayDialog* shutdown_dialog{};
     QWidget* perf_overlay = nullptr; ///< PerformanceOverlay, or Fritchii's (fritchii/perf_overlay)

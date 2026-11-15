@@ -13,9 +13,11 @@
 #include <cstring>
 #include <mutex>
 #include <thread>
+#include <utility>
 
 #include "common/assert.h"
 #include "common/hex_util.h"
+#include "common/host_video_memory.h"
 #include "common/logging.h"
 #include "common/settings.h"
 #ifndef _WIN32
@@ -278,6 +280,23 @@ constexpr std::array POLL_BACKOFF_RECORDS{
     BuiltinPatchRecord{.module_offset = 0x1708C, .bytes = POLL_BACKOFF_RETURN, .checked = true, .original = 0},
 };
 
+// Max Resolution turns the game's dynamic resolution off, so the 3D stays at 1440p docked. A
+// small card (GTX 1650, RTX 3050 Laptop 4 GB) then spends 36 ms a frame at the 90th percentile:
+// there the game keeps its own controller. EDEN_NX2_NO_MAX_RES=0 applies the patch anyway.
+bool MaxResolutionFits() {
+    if (const char* const value = std::getenv("EDEN_NX2_NO_MAX_RES"); value && *value == '0') {
+        return true;
+    }
+    const bool small = Common::HostHasSmallVideoMemory();
+    static bool logged{};
+    if (small && !std::exchange(logged, true)) {
+        LOG_INFO(Loader, "Max Resolution (built-in) left out: {} MiB of video memory, the game "
+                         "keeps its dynamic resolution",
+                 Common::HostDedicatedVideoMemory() >> 20);
+    }
+    return !small;
+}
+
 constexpr std::array BUILTIN_PATCHES{
     BuiltinPatch{
         .name = "Max Resolution (built-in)",
@@ -286,6 +305,7 @@ constexpr std::array BUILTIN_PATCHES{
         .build_id = "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348",
         .records = MAX_RESOLUTION_RECORDS,
         .disable_env = "EDEN_NX2_NO_MAX_RES",
+        .setting_enabled = &MaxResolutionFits,
     },
     // Before Dark's: it contains his routine and replaces it while applied. Off by default; only
     // listed in Add-Ons while the setting is on.

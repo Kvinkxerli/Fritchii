@@ -413,8 +413,70 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
 // over 1 GiB as RGBA8 (title 1's 8192x8192x68 ASTC 8x8 virtual textures are 24 GB each) keeps only
 // its mip levels from `level_offset` on, so host mip 0 is guest mip `level_offset`. Normalized
 // coordinates and derivative LOD still address it correctly; explicit LODs sample one level lower.
+/// ASTC re-compressed to BC1/BC3 takes 2-4 times the guest's bytes: on a GTX 1650 Ocarina of
+/// Time's textures alone passed the 3 GiB budget (22.8 fps; 30.0 with one level left out). The
+/// number of top mip levels such a texture leaves out on the host (TrimmedHostInfo), for textures
+/// of at least AstcTrimMinSize texels on a side. Automatic: it starts at 1 on cards under 5 GiB
+/// and at 0 on larger ones, and goes up one level (to at most 2) each time the driver has
+/// reported more device memory in use than its budget for a while (NoteBudgetPressure), so a
+/// card that fits is never touched. Only images made afterwards change.
+/// EDEN_NX2_ASTC_TRIM=<levels> fixes it (0 = off).
+constexpr int AstcTrimForcedNone = -1;
+[[nodiscard]] int AstcTrimForced() {
+    static const int forced = [] {
+        const char* value = std::getenv("EDEN_NX2_ASTC_TRIM");
+        return value != nullptr ? std::clamp(std::atoi(value), 0, 3) : AstcTrimForcedNone;
+    }();
+    return forced;
+}
+std::atomic<int> g_astc_auto_trim{-1}; ///< -1: not chosen yet
+
+[[nodiscard]] u32 AstcTrimLevels(const Device& device) {
+    if (const int forced = AstcTrimForced(); forced != AstcTrimForcedNone) {
+        return static_cast<u32>(forced);
+    }
+    int level = g_astc_auto_trim.load(std::memory_order_relaxed);
+    if (level < 0) {
+        int unset = -1;
+        g_astc_auto_trim.compare_exchange_strong(
+            unset, device.GetDeviceLocalMemory() < (u64{5} << 30) ? 1 : 0,
+            std::memory_order_relaxed);
+        level = g_astc_auto_trim.load(std::memory_order_relaxed);
+    }
+    return static_cast<u32>(level);
+}
+
+[[nodiscard]] u32 AstcTrimMinSize() {
+    static const u32 size = [] {
+        const char* value = std::getenv("EDEN_NX2_ASTC_TRIM_MIN");
+        return value != nullptr ? static_cast<u32>(std::clamp(std::atoi(value), 64, 16384)) : 1024U;
+    }();
+    return size;
+}
+
 [[nodiscard]] ImageInfo TrimmedHostInfo(const Device& device, const ImageInfo& info, u32& level_offset) {
     level_offset = 0;
+    if (WillUseGpuBcnTranscode(device, info)) {
+        const u32 trim = AstcTrimLevels(device);
+        if (trim == 0 || info.resources.levels <= 1 ||
+            (std::max)(info.size.width, info.size.height) < AstcTrimMinSize()) {
+            return info;
+        }
+        level_offset = (std::min)(trim, static_cast<u32>(info.resources.levels) - 1);
+        ImageInfo host = info;
+        host.size.width = (std::max)(info.size.width >> level_offset, 1U);
+        host.size.height = (std::max)(info.size.height >> level_offset, 1U);
+        host.resources.levels -= static_cast<s32>(level_offset);
+        static std::atomic<u32> trimmed{};
+        if (const u32 count = ++trimmed; count <= 4 || (count & (count - 1)) == 0) {
+            LOG_INFO(Render_Vulkan,
+                     "Small-VRAM ASTC trim: {}x{} with {} levels kept from level {} ({}x{}), {} "
+                     "images so far",
+                     info.size.width, info.size.height, info.resources.levels, level_offset,
+                     host.size.width, host.size.height, count);
+        }
+        return host;
+    }
     if (!WillUseAcceleratedAstcDecode(device, info) || info.type != ImageType::e2D) {
         return info;
     }
@@ -2871,6 +2933,33 @@ bool TextureCacheRuntime::CanReportMemoryUsage() const {
     return device.CanReportMemoryUsage();
 }
 
+void TextureCacheRuntime::NoteBudgetPressure(u64 usage, u64 budget) {
+    if (AstcTrimForced() != AstcTrimForcedNone || budget == 0) {
+        return;
+    }
+    // Over the budget by more than 1/16 of it at 20 checks in a row (600 frames): the driver is
+    // paging device memory out, which costs far more than a mip level.
+    constexpr u32 ChecksToRaise = 20;
+    constexpr int MaxAutoTrim = 2;
+    if (usage <= budget + budget / 16) {
+        over_budget_checks = 0;
+        return;
+    }
+    if (++over_budget_checks < ChecksToRaise) {
+        return;
+    }
+    over_budget_checks = 0;
+    const int level = static_cast<int>(AstcTrimLevels(device));
+    if (level >= MaxAutoTrim) {
+        return;
+    }
+    g_astc_auto_trim.store(level + 1, std::memory_order_relaxed);
+    LOG_WARNING(Render_Vulkan,
+                "Device memory over its budget for 600 frames ({} of {} MiB): ASTC textures made "
+                "from now on leave {} top mip level(s) out",
+                usage >> 20, budget >> 20, level + 1);
+}
+
 void TextureCacheRuntime::LogMemoryStatistics() const {
     Vulkan::LogMemoryStatistics(device);
 }
@@ -5192,9 +5281,12 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
     Image& image, const StagingBufferRef& map,
     std::span<const VideoCommon::SwizzleParameters> swizzles) {
     const ImageInfo& info = image.info;
-    const u32 width = info.size.width;
-    const u32 height = info.size.height;
-    const u32 levels = static_cast<u32>(info.resources.levels);
+    // The host keeps only levels >= skip (small-VRAM ASTC trim): `swizzles` holds those levels
+    // (TextureCache::UploadImageContents), and host level 0 is guest level `skip`.
+    const u32 skip = image.host_level_offset;
+    const u32 width = (std::max)(info.size.width >> skip, 1U);
+    const u32 height = (std::max)(info.size.height >> skip, 1U);
+    const u32 levels = static_cast<u32>(info.resources.levels) - skip;
     const u32 layers = static_cast<u32>(info.resources.layers);
     // The BC encoder declares layout(rgba8). Identical byte layout is not enough:
     // its storage image view must have the matching R8G8B8A8_UNORM format.
@@ -5351,7 +5443,7 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
                 : (std::min)(static_cast<size_t>(u64{count} * layer_stride),
                              guest_size - (std::min)(guest_size, guest_offset));
         astc_decoder_pass->AssembleInto(
-            batch_info, 0, batch_size,
+            batch_info, skip, batch_size,
             ASTCDecoderPass::Target{
                 .image = *pending.image,
                 .aspect_mask = VK_IMAGE_ASPECT_COLOR_BIT,

@@ -85,6 +85,8 @@ add_library(
     hex_util.h
     host_memory.cpp
     host_memory.h
+    host_video_memory.cpp
+    host_video_memory.h
     input.h
     intrusive_red_black_tree.h
     literals.h

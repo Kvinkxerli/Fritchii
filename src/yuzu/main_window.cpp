@@ -90,9 +90,11 @@
 #include <QFileInfo>
 #include <QFutureWatcher>
 #include <QGuiApplication>
+#include <cstdlib>
 #include <QInputDialog>
 #include <QMimeData>
 #include <QPalette>
+#include <QProcess>
 #include <QProgressDialog>
 #include <QScreen>
 #include <QShortcut>
@@ -334,8 +336,10 @@ __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 constexpr int default_mouse_hide_timeout = 2500;
 constexpr int default_input_update_timeout = 1;
 constexpr int EmuThreadStopTimeoutMs = 10'000;
-// A teardown that keeps making progress (Common::ShutdownProgress) is waited for this long at
-// most before its thread is terminated.
+// A teardown is waited for this long after its last progress (Common::ShutdownProgress), and this
+// long in all, before the app gives up on its thread. Some steps (the device, the guest memory)
+// report nothing and took longer than one timeout on a long session.
+constexpr qint64 EmuThreadStallTimeoutMs = 60'000;
 constexpr qint64 MaxEmuThreadShutdownMs = 180'000;
 
 constexpr size_t CopyBufferSize = 1_MiB;
@@ -2467,6 +2471,7 @@ void MainWindow::OnEmulationStopTimeExpired() {
     if (QtCommon::emu_thread) {
         QtCommon::emu_thread->ForceStop();
         emu_force_stop_clock.start();
+        emu_progress_clock.start();
         shutdown_progress_seen = Common::ShutdownProgress();
         emu_terminate_timer.setSingleShot(true);
         emu_terminate_timer.start(EmuThreadStopTimeoutMs);
@@ -2476,17 +2481,21 @@ void MainWindow::OnEmulationStopTimeExpired() {
 }
 
 bool MainWindow::EmulationShutdownProgressing() {
+    if (!emu_force_stop_clock.isValid()) {
+        return false;
+    }
     const u64 progress = Common::ShutdownProgress();
-    const bool moved = progress != shutdown_progress_seen;
-    shutdown_progress_seen = progress;
-    return moved && emu_force_stop_clock.isValid() &&
+    if (progress != shutdown_progress_seen) {
+        shutdown_progress_seen = progress;
+        emu_progress_clock.start();
+    }
+    return emu_progress_clock.elapsed() < EmuThreadStallTimeoutMs &&
            emu_force_stop_clock.elapsed() < MaxEmuThreadShutdownMs;
 }
 
 void MainWindow::OnEmulationStopTimeout() {
-    // Terminating the thread mid-teardown can leave a lock it holds (the heap's, the driver's)
-    // taken for good, which froze the whole app. While the teardown still moves (pipeline caches
-    // written, pipelines destroyed), it gets another timeout.
+    // While the teardown still moves (pipeline caches written, pipelines destroyed) or has not
+    // stalled for long, it gets another timeout.
     if (QtCommon::emu_thread && QtCommon::emu_thread->isRunning() &&
         EmulationShutdownProgressing()) {
         LOG_INFO(Frontend, "Emulation thread still shutting down after {} ms, waiting",
@@ -2494,16 +2503,31 @@ void MainWindow::OnEmulationStopTimeout() {
         emu_terminate_timer.start(EmuThreadStopTimeoutMs);
         return;
     }
-    TerminateEmulationThread();
+    AbandonEmulationThread();
     OnEmulationStopped();
 }
 
-void MainWindow::TerminateEmulationThread() {
-    if (QtCommon::emu_thread && QtCommon::emu_thread->isRunning()) {
-        LOG_ERROR(Frontend, "Emulation thread failed to stop, terminating it");
-        QtCommon::emu_thread->terminate();
-        QtCommon::emu_thread->wait();
+void MainWindow::AbandonEmulationThread() {
+    if (!QtCommon::emu_thread || !QtCommon::emu_thread->isRunning()) {
+        return;
     }
+    // Terminating the thread mid-teardown left a lock it held (the heap's, the driver's) taken for
+    // good and froze the whole app on "Closing software...". The process ends instead: the
+    // pipeline caches are written at the start of the teardown and the settings at boot.
+    LOG_CRITICAL(Frontend,
+                 "Emulation thread failed to stop ({} ms, {} ms since its last progress), "
+                 "ending the process{}",
+                 emu_force_stop_clock.elapsed(), emu_progress_clock.elapsed(),
+                 close_pending ? "" : " and starting Fritchii again");
+    Common::Log::Stop();
+    if (!close_pending) {
+        QProcess::startDetached(QCoreApplication::applicationFilePath(), {});
+    }
+#ifdef _WIN32
+    // Not ExitProcess: it runs the DLL detach handlers, which can wait on the stuck thread's locks.
+    TerminateProcess(GetCurrentProcess(), EXIT_FAILURE);
+#endif
+    std::_Exit(EXIT_FAILURE);
 }
 
 void MainWindow::OnEmulationStopped() {
@@ -2626,7 +2650,7 @@ void MainWindow::ShutdownGame() {
         } while (QtCommon::emu_thread && QtCommon::emu_thread->isRunning() &&
                  EmulationShutdownProgressing());
     }
-    TerminateEmulationThread();
+    AbandonEmulationThread();
     OnEmulationStopped();
 }
 
