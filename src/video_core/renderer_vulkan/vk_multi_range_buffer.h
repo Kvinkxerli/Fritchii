@@ -6,7 +6,7 @@
 #include <span>
 #include <vector>
 
-#include <boost/container/static_vector.hpp>
+#include <boost/container/small_vector.hpp>
 
 #include "common/common_funcs.h"
 #include "common/common_types.h"
@@ -97,7 +97,7 @@ private:
     void DrainRetired(Scheduler& scheduler);
 
     ::Common::unordered_map<u64, Entry> entries;
-    boost::container::static_vector<Retired, MAX_RETIRED> retired;
+    boost::container::small_vector<Retired, MAX_RETIRED> retired;
     u32 sparse_memory_type_bits{};
     VkBufferUsageFlags sparse_usage{};
 };
