@@ -213,6 +213,10 @@ constexpr std::pair<const char*, const char*> BuiltinSwitches[] = {
     {"EDEN_NX2_READ_THROTTLE", "0"},
     // Texture cache ceiling for 8 GB cards (smaller cards use our adaptive thresholds):
     {"EDEN_NX2_TC_CEILING_MIB", "7680"},
+    // Quick eviction of bad-overlap and stale render targets:
+    {"EDEN_NX2_TC_STALE_AGE", "10"},
+    // Host frame pacer: measure-only on laptop hybrid displays to prevent artificial presentation wait stalls:
+    {"EDEN_NX2_HOST_PACE", "0"},
     // On-demand JIT compilation without aggressive idle-core churn:
     {"EDEN_NX2_JIT_WARM", "0"},
     // Ocarina of Time: unlock high refresh (60 FPS) and distribute guest threads across all cores:

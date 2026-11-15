@@ -69,6 +69,7 @@ add_library(video_core STATIC
     fsr.cpp
     fsr.h
     fsr4_support.h
+    ocarina_camera.h
     game_dlss_status.cpp
     game_dlss_status.h
     host1x/codecs/decoder.cpp

@@ -677,7 +677,11 @@ void TextureCache<P>::TickFrame() {
                 }
             }
             if (native_thresholds_applied && budget_check_frames++ % 30 == 0) {
-                const u64 budget = runtime.GetDeviceMemoryBudget();
+                const u64 raw_budget = runtime.GetDeviceMemoryBudget();
+                retention_budget = (retention_budget == 0 || raw_budget <= retention_budget)
+                                       ? raw_budget
+                                       : (std::min)(raw_budget, retention_budget + (16_MiB));
+                const u64 budget = retention_budget;
                 if constexpr (requires { runtime.NoteBudgetPressure(u64{}, u64{}); }) {
                     runtime.NoteBudgetPressure(runtime.GetDeviceMemoryUsage(), budget);
                 }
