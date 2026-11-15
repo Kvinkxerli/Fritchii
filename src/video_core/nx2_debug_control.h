@@ -444,8 +444,8 @@ inline void LoadExperiments() {
         g_experiments[50].store(1, std::memory_order_relaxed);
         // EXP27 = 13 (bits 1, 4, 8): publish waits, ring prefetch, and dispatch batching
         g_experiments[27].store(13, std::memory_order_relaxed);
-        // EXP12 = 1: fence release waits only for queued writers; eliminates full GPU split ring drains (292 ms/s saved)
-        g_experiments[12].store(1, std::memory_order_relaxed);
+        // EXP12 = 2: fence release waits only for queued writers; suspends without full GPU split ring drains (saves 21.6 ms stalls)
+        g_experiments[12].store(2, std::memory_order_relaxed);
         // EXP22 = 7: FRONT_STATE + DRAW_BATCH + SKIP_SAME_DRAWREG (compresses ring traffic for NPC draws in towns)
         g_experiments[22].store(7, std::memory_order_relaxed);
         // EXP24 = 3: OoT present poll fast micro-sleep (100us) instead of condition variable 1ms timeout stall

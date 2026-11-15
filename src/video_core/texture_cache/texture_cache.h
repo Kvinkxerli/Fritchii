@@ -640,15 +640,13 @@ void TextureCache<P>::TickFrame() {
                         // episode may still have some left after the grace period: use them
                         // all before raising the margin.
                         const u64 since = frame_tick + 1 - spill_collect_tick;
-                        if (spill_forced_collects < MaxSpillCollects) {
-                            if (spill_forced_collects == 0 ||
-                                frame_tick >= spill_last_collect + SpillCollectSpacing) {
-                                spill_last_collect = frame_tick;
-                                ++spill_forced_collects;
-                                ++spill_log_collects;
-                                spill_collect = true;
-                            }
-                        } else if (since >= SpillGraceFrames) {
+                        if (frame_tick >= spill_last_collect + SpillCollectSpacing) {
+                            spill_last_collect = frame_tick;
+                            ++spill_forced_collects;
+                            ++spill_log_collects;
+                            spill_collect = true;
+                        }
+                        if (since >= SpillGraceFrames) {
                             const u64 target = (std::min)(spill_window_bytes + 128_MiB, 768_MiB);
                             if (target > spill_margin) {
                                 spill_margin = target;
@@ -756,7 +754,7 @@ void TextureCache<P>::TickFrame() {
                         }
                     }
                     if (budget < 5_GiB) {
-                        const u64 safe_margin = (std::max)(margin + active_margin, u64{384_MiB});
+                        const u64 safe_margin = (std::max)(margin + active_margin + slack_margin, u64{512_MiB});
                         const u64 safe_ceiling =
                             budget > safe_margin ? budget - safe_margin : budget / 2;
                         critical_memory = (std::min)(critical_memory, safe_ceiling);
@@ -937,8 +935,9 @@ void TextureCache<P>::TickFrame() {
             async_decodes_queued = 0;
         images_created = images_deleted = 0;
     }
+    const bool small_vram = runtime.GetDeviceLocalMemory() < 5_GiB;
     if (const u64 rt_evict = RtEvictPressureFrames();
-        rt_evict != 0 && total_used_memory > expected_memory) {
+        rt_evict != 0 && (total_used_memory > expected_memory || spill_margin != 0 || small_vram)) {
         for (size_t budget = transient_targets.size(); budget != 0 && !transient_targets.empty();
              --budget) {
             TransientTarget entry = transient_targets.front();

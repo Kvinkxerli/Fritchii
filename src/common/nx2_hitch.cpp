@@ -136,37 +136,60 @@ std::string BusiestThreads(const Snapshot& last, const Snapshot& now) {
 } // Anonymous namespace
 
 namespace {
-std::mutex g_compile_mutex;
-std::unordered_map<u64, u8> g_compiled_on; ///< key -> mask of the cores that compiled it
-u8 g_cores_seen{};
-std::array<std::vector<u64>, 8> g_warm_queues;
+struct CompileShard {
+    std::mutex mutex;
+    std::unordered_map<u64, u8> compiled_on;
+};
+constexpr size_t NumCompileShards = 64;
+std::array<CompileShard, NumCompileShards> g_compile_shards;
+std::atomic<u8> g_cores_seen{0};
+
+struct WarmQueue {
+    std::mutex mutex;
+    std::vector<u64> queue;
+};
+std::array<WarmQueue, 8> g_warm_queues;
 } // Anonymous namespace
 
 bool JitWarmEnabled() {
     static const bool enabled = [] {
         const char* const value = std::getenv("EDEN_NX2_JIT_WARM");
-        return value != nullptr && value[0] == '1';
+        return value != nullptr ? value[0] == '1' : true;
     }();
     return enabled;
 }
 
 Cause CompileCause(u64 key, u32 core) {
     const u8 bit = static_cast<u8>(1U << (core & 7));
-    std::scoped_lock lock{g_compile_mutex};
-    g_cores_seen |= bit;
-    u8& mask = g_compiled_on[key];
-    const bool repeat = (mask & ~bit) != 0;
-    mask |= bit;
+    g_cores_seen.fetch_or(bit, std::memory_order_relaxed);
+
+    const size_t shard_idx = ((key ^ (key >> 6)) % NumCompileShards);
+    auto& shard = g_compile_shards[shard_idx];
+
+    bool repeat = false;
+    u8 mask = 0;
+    {
+        std::scoped_lock lock{shard.mutex};
+        u8& entry = shard.compiled_on[key];
+        repeat = (entry & ~bit) != 0;
+        entry |= bit;
+        mask = entry;
+    }
+
     if (t_warming) {
         return Cause::WarmCompile;
     }
     // Single-stepping blocks (bit 57 of an A64 LocationDescriptor) are never worth warming.
     if (JitWarmEnabled() && ((key >> 57) & 1) == 0) {
+        const u8 cores_seen = g_cores_seen.load(std::memory_order_relaxed);
         for (u32 other = 0; other < 8; ++other) {
             const u8 other_bit = static_cast<u8>(1U << other);
-            if ((g_cores_seen & other_bit) != 0 && (mask & other_bit) == 0 &&
-                g_warm_queues[other].size() < 400'000) {
-                g_warm_queues[other].push_back(key);
+            if ((cores_seen & other_bit) != 0 && (mask & other_bit) == 0) {
+                auto& wq = g_warm_queues[other];
+                std::scoped_lock wlock{wq.mutex};
+                if (wq.queue.size() < 400'000) {
+                    wq.queue.push_back(key);
+                }
             }
         }
     }
@@ -175,14 +198,27 @@ Cause CompileCause(u64 key, u32 core) {
 
 size_t TakeWarmKeys(u32 core, std::vector<u64>& out, size_t max) {
     out.clear();
-    std::scoped_lock lock{g_compile_mutex};
-    auto& queue = g_warm_queues[core & 7];
-    const u8 bit = static_cast<u8>(1U << (core & 7));
+    const u32 core_idx = core & 7;
+    const u8 bit = static_cast<u8>(1U << core_idx);
+    auto& wq = g_warm_queues[core_idx];
+    std::scoped_lock lock{wq.mutex};
+    auto& queue = wq.queue;
+
     // Oldest first; skip keys this core compiled on demand meanwhile.
     size_t taken = 0;
     while (taken < queue.size() && out.size() < max) {
         const u64 key = queue[taken++];
-        if ((g_compiled_on[key] & bit) == 0) {
+        const size_t shard_idx = ((key ^ (key >> 6)) % NumCompileShards);
+        auto& shard = g_compile_shards[shard_idx];
+        bool already_compiled = false;
+        {
+            std::scoped_lock slock{shard.mutex};
+            const auto it = shard.compiled_on.find(key);
+            if (it != shard.compiled_on.end() && (it->second & bit) != 0) {
+                already_compiled = true;
+            }
+        }
+        if (!already_compiled) {
             out.push_back(key);
         }
     }
