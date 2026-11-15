@@ -23,6 +23,7 @@
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "shader_recompiler/exception.h"
+#include "shader_recompiler/frontend/ampere/program_override.h"
 #include "core/core.h"
 #include "video_core/gpu_split.h"
 #include "video_core/fire_emblem_upscale.h"
@@ -1303,6 +1304,9 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
             return true;
         }
     }
+    if (BypassOotBaseNetwork()) {
+        return true;
+    }
     bool dispatched = true;
     // EXP10 (GpuSplit::BeginDispatchRecord): what the dispatch writes. A rejected program writes
     // nothing besides what its bindings marked before (recorded as they were marked).
@@ -1656,6 +1660,35 @@ std::optional<Texture::TICEntry> KeplerCompute::ConstBuffer0Image(u32 offset) co
     return GetTICEntry(tic_index);
 }
 
+/// Identify a known 1.0.0 output pass before shader translation can reject it.
+/// The first word is a quick filter. The full native key must match before replacing the pass.
+bool KeplerCompute::BypassOotBaseNetwork() {
+    using namespace VideoCommon::OotNetwork;
+    const u64 program_id = Settings::GetCurrentProgramID();
+    if (!BypassEnabled(program_id)) {
+        return false;
+    }
+    const GPUVAddr program = regs.code_loc.Address() + launch_description.program_start;
+    if (!memory_manager.IsFullyMappedRange(program, sizeof(u32))) {
+        return false;
+    }
+    const u32 first_word = memory_manager.Read<u32>(program);
+    // Several output programs start with the same instruction.
+    for (const auto& candidate : BaseOutputPrograms) {
+        if (candidate.first_word != first_word ||
+            !memory_manager.IsFullyMappedRange(program, candidate.size)) {
+            continue;
+        }
+        std::vector<Shader::Ampere::Instruction> code(candidate.size /
+                                                     sizeof(Shader::Ampere::Instruction));
+        memory_manager.ReadBlock(program, code.data(), candidate.size);
+        if (Shader::Ampere::NativeProgramKey(code) == candidate.key) {
+            return BypassOotNetwork(program_id, candidate.key);
+        }
+    }
+    return false;
+}
+
 bool KeplerCompute::BypassOotNetwork(u64 program_id, u64 native_key) {
     using namespace VideoCommon::OotNetwork;
     if (!BypassEnabled(program_id)) {
@@ -1679,16 +1712,19 @@ bool KeplerCompute::BypassOotNetwork(u64 program_id, u64 native_key) {
     if (native_key == PrepassProgramKey || native_key == NetworkProgramKey) {
         return state->output_replaced.load(std::memory_order_relaxed);
     }
-    if (native_key != OutputProgramKey) {
+    const bool base_output = std::ranges::find(BaseOutputPrograms, native_key,
+                                              &BaseOutputProgram::key) != BaseOutputPrograms.end();
+    if (native_key != OutputProgramKey && !base_output) {
         return false;
     }
-    // The copy needs the tonemapped image to be a B10G11R11 block-linear image of the output's size.
+    // The base game can run its tonemap at a lower resolution than the output.
     const auto output = ConstBuffer0Image(OutputImageHandleOffset);
     if (!output || output->format != Texture::TextureFormat::B10G11R11 || output->Address() == 0 ||
         output->Address() == tonemapped.Address() || !output->IsBlockLinear() ||
         tonemapped.format != Tegra::RenderTargetFormat::B10G11R11_FLOAT ||
-        tonemapped.tile_mode.is_pitch_linear || tonemapped.width != output->Width() ||
-        tonemapped.height != output->Height()) {
+        tonemapped.tile_mode.is_pitch_linear || tonemapped.width == 0 || tonemapped.height == 0 ||
+        (base_output ? tonemapped.width > output->Width() || tonemapped.height > output->Height()
+                     : tonemapped.width != output->Width() || tonemapped.height != output->Height())) {
         state->output_replaced.store(false, std::memory_order_relaxed);
         static bool warned = false;
         if (!std::exchange(warned, true)) {
@@ -1713,6 +1749,8 @@ bool KeplerCompute::BypassOotNetwork(u64 program_id, u64 native_key) {
     destination.addr_upper = static_cast<u32>(output->Address() >> 32);
     destination.addr_lower = static_cast<u32>(output->Address());
     Fermi2D::Surface source = destination;
+    source.width = tonemapped.width;
+    source.height = tonemapped.height;
     source.block_width.Assign(tonemapped.tile_mode.block_width);
     source.block_height.Assign(tonemapped.tile_mode.block_height);
     source.block_depth.Assign(tonemapped.tile_mode.block_depth);
@@ -1722,7 +1760,7 @@ bool KeplerCompute::BypassOotNetwork(u64 program_id, u64 native_key) {
     const s32 height = static_cast<s32>(output->Height());
     const Fermi2D::Config config{
         .operation = Fermi2D::Operation::SrcCopy,
-        .filter = Fermi2D::Filter::Point,
+        .filter = base_output ? Fermi2D::Filter::Bilinear : Fermi2D::Filter::Point,
         .must_accelerate = true,
         .dst_x0 = 0,
         .dst_y0 = 0,
@@ -1730,17 +1768,18 @@ bool KeplerCompute::BypassOotNetwork(u64 program_id, u64 native_key) {
         .dst_y1 = height,
         .src_x0 = 0,
         .src_y0 = 0,
-        .src_x1 = width,
-        .src_y1 = height,
+        .src_x1 = static_cast<s32>(source.width),
+        .src_y1 = static_cast<s32>(source.height),
     };
     const bool copied = rasterizer->AccelerateSurfaceCopy(source, destination, config);
     state->output_replaced.store(copied, std::memory_order_relaxed);
     static bool logged = false;
     if (!std::exchange(logged, true)) {
         LOG_INFO(HW_GPU,
-                 "Ocarina of Time: anti-aliasing network bypassed ({}): {:#x} -> {:#x} {}x{}",
-                 copied ? "copy of the tonemapped image" : "copy failed", tonemapped.Address(),
-                 output->Address(), width, height);
+                 "Ocarina of Time: anti-aliasing network bypassed ({}): "
+                 "shader {:016x}, {:#x} {}x{} -> {:#x} {}x{}",
+                 copied ? "copy of the tonemapped image" : "copy failed", native_key,
+                 tonemapped.Address(), source.width, source.height, output->Address(), width, height);
     }
     return copied;
 }

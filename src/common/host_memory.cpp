@@ -358,13 +358,23 @@ public:
         }
         const size_t virtual_end = virtual_offset + length;
 
+        // Nearly every call protects a range inside one mapped view, which VirtualProtect does
+        // whole without the lock. It refuses a range that reaches a placeholder or a second view
+        // (one Map or Unmap is making or taking apart, or a range across views): those take the
+        // lock below, which gives the whole range the same flags. Map and Unmap hold the lock
+        // across their kernel calls, which slow down when a game maps memory in bulk (zone
+        // changes): write-trap protections, thousands a second, then queued behind them.
+        DWORD old_flags{};
+        if (VirtualProtect(virtual_base + virtual_offset, length, new_flags, &old_flags)) {
+            return;
+        }
+
         const Common::Nx2Hitch::Scope timed{Common::Nx2Hitch::Cause::HostProtect, length}; // before the lock
         std::scoped_lock lock{placeholder_mutex};
         auto [it, end] = placeholders.equal_range({virtual_offset, virtual_end});
         while (it != end) {
             const size_t offset = (std::max)(it->lower(), virtual_offset);
             const size_t protect_length = (std::min)(it->upper(), virtual_end) - offset;
-            DWORD old_flags{};
             if (!VirtualProtect(virtual_base + offset, protect_length, new_flags, &old_flags)) {
                 LOG_CRITICAL(HW_Memory, "Failed to change virtual memory protect rules");
             }
