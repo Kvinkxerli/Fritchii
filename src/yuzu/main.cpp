@@ -192,15 +192,25 @@ constexpr std::pair<const char*, const char*> BuiltinSwitches[] = {
     {"EDEN_NX2_LIST_WAIT_SKIP", "1"},     {"EDEN_NX2_PREFLUSH", "1"},
     {"EDEN_NX2_SEM_FAST", "2"},           {"EDEN_NX2_EXP12", "1"},
     {"EDEN_NX2_EXP24", "3"},              {"EDEN_NX2_EXP22", "7"},
-    {"EDEN_NX2_EXP25", "1"},              {"EDEN_NX2_EXP26", "3"},
+    {"EDEN_NX2_EXP25", "1"},              {"EDEN_NX2_EXP26", "7"},
     {"EDEN_NX2_EXP28", "3"},              {"EDEN_NX2_IDLE_PAUSE", "1"},
     {"EDEN_NX2_ARB_SPIN", "8"},           {"EDEN_NX2_TRANSCODE_THREADS", "4"},
+    // Macro DMA snapshot skipping and query report DMA wait reduction:
+    {"EDEN_NX2_EXP10", "5"},              {"EDEN_NX2_EXP30", "1"},
+    // Async collection of cached memory writes and fewer submits / prefetched ring:
+    {"EDEN_NX2_EXP35", "2"},              {"EDEN_NX2_EXP27", "13"},
+    // Async read-backs and clean pipeline lookup:
+    {"EDEN_NX2_EXP49", "1"},              {"EDEN_NX2_EXP50", "1"},
+    // Drop empty submits:
+    {"EDEN_NX2_EXP61", "1"},
+    // Disable intrusive zero-page scanning during active gameplay (eliminates 2.6s freezes & 1M page faults):
+    {"EDEN_NX2_ZERO_TRIM", "0"},
     // No 40 MB/s pacing of game file reads:
     {"EDEN_NX2_READ_THROTTLE", "0"},
     // Texture cache ceiling for 8 GB cards (smaller cards use our adaptive thresholds):
     {"EDEN_NX2_TC_CEILING_MIB", "7680"},
-    // Idle CPU cores compile ahead game code:
-    {"EDEN_NX2_JIT_WARM", "1"},
+    // On-demand JIT compilation without aggressive idle-core churn:
+    {"EDEN_NX2_JIT_WARM", "0"},
     // Ocarina of Time: unlock high refresh (60 FPS) and distribute guest threads across all cores:
     {"EDEN_NX2_OOT_HIGH_REFRESH", "1"},
     {"EDEN_NX2_OOT_WIDE_AFFINITY", "1"},

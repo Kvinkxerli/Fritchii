@@ -147,32 +147,32 @@ TEST_CASE("Thread pinning: hybrid E-cores first still pins the P-cores",
     CHECK((plan.guest & e) == 0);
 }
 
-TEST_CASE("Thread pinning: hybrid 4P+4E is pinned to P-cores", "[common][thread_pinning]") {
-    // Core i5-12450H: 4 P-cores with SMT and 4 E-cores. Auto mode pins 4 guest cores 1:1 to physical P-cores, GPU shares P-cores, E-cores isolated for background.
+TEST_CASE("Thread pinning: hybrid 4P+4E is pinned to P-cores and E-cores", "[common][thread_pinning]") {
+    // Core i5-12450H: 4 P-cores with SMT and 4 E-cores. Auto mode dedicates P-cores 1 and 2 to GPU front and back, while guest cores utilize remaining P-cores and all E-cores.
     Builder builder;
     const u64 p = builder.AddCores(4, 2, 1);
     const u64 e = builder.AddCores(4, 1, 0);
     builder.AddL3(p | e, 12 * MiB);
     const Plan plan = MakePlan(builder.topology, Mode::Auto);
-    CHECK(plan.front == 0xFF);
-    CHECK(plan.back == 0xFF);
-    CHECK(plan.guest == 0xFF);
+    CHECK(plan.front == 0x0C);
+    CHECK(plan.back == 0x30);
+    CHECK(plan.guest == 0xFC3);
     CHECK(plan.guest_cores[0] == 0x03);
-    CHECK(plan.guest_cores[1] == 0x0C);
-    CHECK(plan.guest_cores[2] == 0x30);
-    CHECK(plan.guest_cores[3] == 0xC0);
+    CHECK(plan.guest_cores[1] == 0xC0);
+    CHECK(plan.guest_cores[2] == 0x100);
+    CHECK(plan.guest_cores[3] == 0x200);
     CHECK(plan.efficiency_mask == e);
     CHECK(plan.performance_cores == 4);
     CHECK(plan.efficiency_cores == 4);
 
     const Plan forced = MakePlan(builder.topology, Mode::Force);
-    CHECK(forced.front == 0xFF);
-    CHECK(forced.back == 0xFF);
-    CHECK(forced.guest == 0xFF);
+    CHECK(forced.front == 0x0C);
+    CHECK(forced.back == 0x30);
+    CHECK(forced.guest == 0xFC3);
     CHECK(forced.guest_cores[0] == 0x03);
-    CHECK(forced.guest_cores[1] == 0x0C);
-    CHECK(forced.guest_cores[2] == 0x30);
-    CHECK(forced.guest_cores[3] == 0xC0);
+    CHECK(forced.guest_cores[1] == 0xC0);
+    CHECK(forced.guest_cores[2] == 0x100);
+    CHECK(forced.guest_cores[3] == 0x200);
     CHECK(forced.efficiency_mask == e);
 }
 

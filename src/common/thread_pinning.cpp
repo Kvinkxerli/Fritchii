@@ -15,8 +15,9 @@ namespace Common::ThreadPinning {
 namespace {
 
 // The first two cores that do not hold logical processor 0 go to the GPU threads.
-// On hybrid CPUs with 4 P-cores (e.g. Alder Lake i5-12450H), the 4 guest cores are assigned 1:1
-// to each physical P-core to eliminate SMT contention, while GPU threads share the P-cores.
+// On hybrid CPUs with 4 P-cores (e.g. Alder Lake i5-12450H), GPU front and back threads get
+// dedicated P-cores to eliminate ring wait hitches, while guest cores and workers utilize the
+// remaining P-cores and all E-cores concurrently.
 Plan Assign(std::span<const Core> cores, std::span<const Core> efficiency_cores = {}) {
     Plan plan;
     u64 all = 0;
@@ -29,13 +30,28 @@ Plan Assign(std::span<const Core> cores, std::span<const Core> efficiency_cores 
     plan.chosen_cores = cores.size();
 
     if (cores.size() == 4 && !efficiency_cores.empty()) {
-        for (size_t i = 0; i < 4; ++i) {
-            plan.guest_cores[i] = cores[i].mask;
+        std::vector<u64> gpu;
+        std::vector<u64> guest_p_cores;
+        for (const Core& core : cores) {
+            if ((core.mask & 1) == 0 && gpu.size() < 2) {
+                gpu.push_back(core.mask);
+            } else {
+                guest_p_cores.push_back(core.mask);
+            }
         }
-        plan.guest = all;
-        plan.front = all;
-        plan.back = all;
-        return plan;
+        if (gpu.size() >= 2) {
+            plan.front = gpu[0];
+            plan.back = gpu[1];
+            // Guest cores use remaining P-cores AND all E-cores without SMT contention with GPU
+            plan.guest = (all & ~(plan.front | plan.back)) | plan.efficiency_mask;
+            for (size_t i = 0; i < guest_p_cores.size() && i < 2; ++i) {
+                plan.guest_cores[i] = guest_p_cores[i];
+            }
+            for (size_t i = 0; i < efficiency_cores.size() && (i + 2) < 4; ++i) {
+                plan.guest_cores[i + 2] = efficiency_cores[i].mask;
+            }
+            return plan;
+        }
     }
 
     std::vector<u64> gpu;

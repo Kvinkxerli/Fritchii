@@ -434,11 +434,16 @@ inline void LoadExperiments() {
         // EXP39 = 3: publish to a back that waits after 8 words, no snapshot refresh of entries
         // that ran (zortos293/Lichii#805 62db242b34; see the EXP39 notes above). Timing only.
         g_experiments[39].store(3, std::memory_order_relaxed);
-        // EXP27 = 5 (2026-11-11, small cards like RTX 3050 Laptop / GTX 1650): the
-        // front publishes before it waits and the back prefetches the ring: 23.8 -> 25.0 fps.
-        if (Common::HostHasSmallVideoMemory()) {
-            g_experiments[27].store(5, std::memory_order_relaxed);
-        }
+        // EXP10 = 5: macro DMA read snapshots skip drains for unrelated compute/copies
+        g_experiments[10].store(5, std::memory_order_relaxed);
+        // EXP30 = 1: macro DMA reads of query reports wait only for their own reports
+        g_experiments[30].store(1, std::memory_order_relaxed);
+        // EXP35 = 2: asynchronous collection of cached memory writes on the back
+        g_experiments[35].store(2, std::memory_order_relaxed);
+        // EXP50 = 1: pipeline clean lookup blend check without Refresh
+        g_experiments[50].store(1, std::memory_order_relaxed);
+        // EXP27 = 13 (bits 1, 4, 8): publish waits, ring prefetch, and dispatch batching
+        g_experiments[27].store(13, std::memory_order_relaxed);
         // EXP12 = 1: fence release waits only for queued writers; eliminates full GPU split ring drains (292 ms/s saved)
         g_experiments[12].store(1, std::memory_order_relaxed);
         // EXP22 = 7: FRONT_STATE + DRAW_BATCH + SKIP_SAME_DRAWREG (compresses ring traffic for NPC draws in towns)
@@ -447,8 +452,8 @@ inline void LoadExperiments() {
         g_experiments[24].store(3, std::memory_order_relaxed);
         // EXP25 = 1: Resource poll backoff (500us sleep on pending resource poll loop, eliminates 100% core spin on NPC loads)
         g_experiments[25].store(1, std::memory_order_relaxed);
-        // EXP26 = 3: Native uniform bank checks: bit 1 (streamed uniform buffers skip check) + bit 2 (SSE2 fast page compare)
-        g_experiments[26].store(3, std::memory_order_relaxed);
+        // EXP26 = 7: Native uniform bank checks: bit 1 (streamed), bit 2 (SSE2 compare), bit 4 (direct snapshot upload)
+        g_experiments[26].store(7, std::memory_order_relaxed);
         // EXP28 = 3: Fewer fences: bit 1 (FENCE_TRIM) + bit 2 (FENCE_FOLD)
         g_experiments[28].store(3, std::memory_order_relaxed);
         for (int n = 0; n < ExperimentCount; ++n) {
