@@ -736,6 +736,15 @@ void TextureCache<P>::TickFrame() {
                                 (std::max)(critical_memory, floor_expected + image_floor / 4);
                         }
                     }
+                    if (budget < 5_GiB) {
+                        const u64 safe_margin = (std::max)(margin + active_margin, u64{384_MiB});
+                        const u64 safe_ceiling =
+                            budget > safe_margin ? budget - safe_margin : budget / 2;
+                        critical_memory = (std::min)(critical_memory, safe_ceiling);
+                        expected_memory = (std::min)(
+                            expected_memory,
+                            critical_memory > 384_MiB ? critical_memory - 384_MiB : critical_memory);
+                    }
                     // Log the first values and real changes (the budget moves by a few MiB all
                     // the time). Compared after the overrides: the value before them is above
                     // the 5/8-of-budget cap on large cards, so every check looked like a change

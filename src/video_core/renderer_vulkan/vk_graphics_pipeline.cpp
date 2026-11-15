@@ -606,7 +606,8 @@ WaitLimitReason WaitLimitReasonFor(const VideoCommon::DrawTargets& targets) {
     if (IsLightingProbe(targets)) {
         return WaitLimitReason::Probe;
     }
-    if (TargetDrawnThisSession(targets.gpu_addr)) {
+    if (targets.kind != VideoCommon::DrawTargetClass::FirstTime ||
+        TargetDrawnThisSession(targets.gpu_addr)) {
         return WaitLimitReason::AlreadyDrawn;
     }
     return WaitLimitReason::None;

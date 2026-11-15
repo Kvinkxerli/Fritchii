@@ -19,6 +19,7 @@
 
 #include "common/fs/fs_util.h"
 #include "common/fs/path_util.h"
+#include "common/host_video_memory.h"
 #include "common/logging.h"
 #include "common/settings.h"
 #include "video_core/vulkan_common/streamline.h"
@@ -320,6 +321,14 @@ bool Start() {
     }
     if (!Settings::values.nvidia_dlss.GetValue()) {
         return false;
+    }
+    if (Common::HostHasSmallVideoMemory()) {
+        const char* const force = std::getenv("EDEN_NX2_FORCE_DLSS");
+        if (!force || *force == '0') {
+            LOG_WARNING(Render_Vulkan,
+                        "NVIDIA DLSS skipped: GPU has <= 4GB VRAM (prevents NGX OOM crash and host memory spill); using FSR 3.1");
+            return false;
+        }
     }
     if (!state.module) {
         const DlssFiles files = FindDlssFiles();

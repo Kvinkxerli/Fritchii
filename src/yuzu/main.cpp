@@ -203,6 +203,10 @@ constexpr std::pair<const char*, const char*> BuiltinSwitches[] = {
     {"EDEN_NX2_EXP49", "1"},              {"EDEN_NX2_EXP50", "1"},
     // Drop empty submits:
     {"EDEN_NX2_EXP61", "1"},
+    // NVN conditional render macro skipping drains (saves up to 220 ms/s front wait in Castle Town):
+    {"EDEN_NX2_EXP53", "1"},
+    // RT_FAST clean render targets skip and texture binding memo:
+    {"EDEN_NX2_EXP31", "1"},              {"EDEN_NX2_EXP32", "1"},
     // Disable intrusive zero-page scanning during active gameplay (eliminates 2.6s freezes & 1M page faults):
     {"EDEN_NX2_ZERO_TRIM", "0"},
     // No 40 MB/s pacing of game file reads:

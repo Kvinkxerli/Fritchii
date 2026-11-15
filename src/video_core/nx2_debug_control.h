@@ -456,6 +456,12 @@ inline void LoadExperiments() {
         g_experiments[26].store(7, std::memory_order_relaxed);
         // EXP28 = 3: Fewer fences: bit 1 (FENCE_TRIM) + bit 2 (FENCE_FOLD)
         g_experiments[28].store(3, std::memory_order_relaxed);
+        // EXP53 = 1: NVN conditional render macro skips draining the split ring (saves ~220 ms/s front wait)
+        g_experiments[53].store(1, std::memory_order_relaxed);
+        // EXP31 = 1: RT_FAST (skips 8-RT PrepareImageView loop when render targets are clean and still prepared)
+        g_experiments[31].store(1, std::memory_order_relaxed);
+        // EXP32 = 1: Texture binding memo (TextureMemo: reuses sampler and image binding handles)
+        g_experiments[32].store(1, std::memory_order_relaxed);
         for (int n = 0; n < ExperimentCount; ++n) {
             const std::string name = "EDEN_NX2_EXP" + std::to_string(n);
             if (const char* value = std::getenv(name.c_str())) {
