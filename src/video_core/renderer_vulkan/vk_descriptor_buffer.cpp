@@ -98,6 +98,10 @@ void DescriptorBufferRing::TickFrame() {
     frame_reused = true;
 }
 
+bool DescriptorBufferRing::NeedsSubmit(const Scheduler& scheduler) const noexcept {
+    return valid && frame_ticks[(frame_index + 1) % FRAMES_IN_FLIGHT] >= scheduler.CurrentTick();
+}
+
 void DescriptorBufferRing::TouchFrame(Scheduler& scheduler) {
     frame_ticks[frame_index] = scheduler.CurrentTick();
 }
