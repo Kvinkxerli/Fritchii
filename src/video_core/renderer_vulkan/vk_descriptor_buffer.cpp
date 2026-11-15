@@ -138,8 +138,17 @@ DescriptorBufferRing::Allocation DescriptorBufferRing::Allocate(Scheduler& sched
             LOG_DEBUG(Render_Vulkan, "Descriptor buffer frame {} grew to {} chunks", frame_index,
                       count + 1);
         } else {
-            LOG_DEBUG(Render_Vulkan, "Descriptor buffer frame exhausted, stalling on the GPU");
-            scheduler.Finish();
+            // Moves on to the next frame's chunks early. Their tick is waited for only once it
+            // was submitted, and the allocation fails (the draw is skipped) when it was not.
+            const size_t next{(frame_index + 1) % FRAMES_IN_FLIGHT};
+            if (frame_ticks[next] >= scheduler.CurrentTick()) {
+                LOG_DEBUG(Render_Vulkan, "Descriptor buffer exhausted within one command buffer");
+                return Allocation{};
+            }
+            LOG_DEBUG(Render_Vulkan, "Descriptor buffer frame exhausted, moving to the next");
+            scheduler.Wait(frame_ticks[next]);
+            frame_index = next;
+            frame_reused = false;
             chunk_cursor = 0;
             ++generation;
         }

@@ -20,7 +20,7 @@ class DescriptorBufferRing final {
     static constexpr size_t FRAMES_IN_FLIGHT = 8;
     static constexpr VkDeviceSize TILER_FRAME_SIZE = 2 * 1024 * 1024;
     static constexpr VkDeviceSize DESKTOP_FRAME_SIZE = 4 * 1024 * 1024;
-    /// How many times its initial size a frame may grow to before an allocation submits
+    /// How many times its initial size a frame may grow to before it moves to the next frame
     static constexpr size_t MAX_FRAME_GROWTH = 4;
 
 public:
