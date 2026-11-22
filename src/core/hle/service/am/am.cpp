@@ -3,6 +3,7 @@
 
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "common/settings.h"
 #include "core/hle/service/am/am.h"
 #include "core/hle/service/am/button_poller.h"
 #include "core/hle/service/am/event_observer.h"
@@ -24,6 +25,12 @@ void LoopProcess(Core::System& system) {
         "appletAE", std::make_shared<IAllSystemAppletProxiesService>(system, window_system));
     server_manager->RegisterNamedService(
         "appletOE", std::make_shared<IApplicationProxyService>(system, window_system));
+    // Serve Switch 2 graphics (nx2:gsv, vi2, vdecsvc, ...) on extra threads: vi2's frame
+    // presents block until the frame's fence and vblank (~14 ms at 60 fps), so other requests
+    // queued behind them stall without extra threads.
+    if (Settings::CurrentProgramIsSwitch2()) {
+        server_manager->StartAdditionalHostThreads("AM:Host", 2);
+    }
     ServerManager::RunServer(std::move(server_manager));
 }
 

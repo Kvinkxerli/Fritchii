@@ -10,6 +10,7 @@
 
 #include "core/file_sys/errors.h"
 #include "common/nx2_hitch.h"
+#include "common/settings.h"
 #include "core/hle/service/cmif_serialization.h"
 #include "core/hle/service/filesystem/fsp/fs_i_storage.h"
 
@@ -39,20 +40,25 @@ Result IStorage::Read(
     // EDEN_NX2_READ_THROTTLE=0 (boot): no 40 MB/s pacing of game file reads. The original code added it
     // for video freezes in other games; in Ocarina of Time it slept 36-151 ms at
     // boot and area loads and 47 ms when a killed Peahat loaded its effects (2026-11-10).
+    // The 40 MB/s throttle emulates a Switch 1 card. Switch 2 storage is many times faster,
+    // and a Switch 2 title that streams a movie with hundreds of reads a second (OoT's opening:
+    // 300-460) sleeps most of each second on the thread that also hands decoder images back.
     static const bool throttle = [] {
         const char* const value = std::getenv("EDEN_NX2_READ_THROTTLE");
         return value == nullptr || value[0] != '0';
     }();
-    const auto now = std::chrono::steady_clock::now();
-    if (throttle && now < next_read_tick) {
-        // Hitch attribution: sleep_for rounds up to whole ms (1 ms takes ~1.5 ms), on the one FS
-        // thread (fable52_answer_11).
-        const Common::Nx2Hitch::Scope timed{Common::Nx2Hitch::Cause::FileThrottle};
-        std::this_thread::sleep_for(next_read_tick - now);
+    if (!Settings::CurrentProgramIsSwitch2() && throttle) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now < next_read_tick) {
+            // Hitch attribution: sleep_for rounds up to whole ms (1 ms takes ~1.5 ms), on the one FS
+            // thread (fable52_answer_11).
+            const Common::Nx2Hitch::Scope timed{Common::Nx2Hitch::Cause::FileThrottle};
+            std::this_thread::sleep_for(next_read_tick - now);
+        }
+        next_read_tick = std::chrono::steady_clock::now() +
+                         std::chrono::nanoseconds{std::min(length, MaxChargedReadSize) *
+                                                  1'000'000'000 / ReadBytesPerSecond};
     }
-    next_read_tick = std::chrono::steady_clock::now() +
-                     std::chrono::nanoseconds{std::min(length, MaxChargedReadSize) *
-                                              1'000'000'000 / ReadBytesPerSecond};
 
     // Read the data from the Storage backend
     {

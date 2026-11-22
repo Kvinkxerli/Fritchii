@@ -259,6 +259,7 @@ constexpr std::pair<const char*, const char*> BuiltinSwitches[] = {
     {"EDEN_NX2_UBO_INPLACE", "1"},        {"EDEN_NX2_PIPELINE_CLEAN", "1"},
     {"EDEN_NX2_LIST_WAIT_SKIP", "1"},     {"EDEN_NX2_PREFLUSH", "1"},
     {"EDEN_NX2_SEM_FAST", "2"},
+    {"EDEN_NX2_OOT_WIDE_AFFINITY", "1"},
     // No 40 MB/s pacing of game file reads (the original code's fix for video freezes in other games):
     // OoT's videos play fine without it and it slept the game at loads and kills (2026-11-10).
     {"EDEN_NX2_READ_THROTTLE", "0"},

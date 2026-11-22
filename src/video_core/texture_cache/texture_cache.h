@@ -100,7 +100,7 @@ TextureCache<P>::TextureCache(Runtime& runtime_, Tegra::MaxwellDeviceMemoryManag
     sampler_descriptor.cubemap_anisotropy.Assign(1);
 
     // These values were chosen based on typical peak swizzle data sizes seen in some titles
-    constexpr size_t SWIZZLE_DATA_BUFFER_INITIAL_CAPACITY = 8_MiB;
+    constexpr size_t SWIZZLE_DATA_BUFFER_INITIAL_CAPACITY = 4_MiB;
     constexpr size_t UNSWIZZLE_DATA_BUFFER_INITIAL_CAPACITY = 1_MiB;
     swizzle_data_buffer.resize_destructive(SWIZZLE_DATA_BUFFER_INITIAL_CAPACITY);
     unswizzle_data_buffer.resize_destructive(UNSWIZZLE_DATA_BUFFER_INITIAL_CAPACITY);
@@ -115,7 +115,15 @@ TextureCache<P>::TextureCache(Runtime& runtime_, Tegra::MaxwellDeviceMemoryManag
         const s64 device_local_memory = static_cast<s64>(runtime.GetDeviceLocalMemory());
         const s64 min_spacing_expected = device_local_memory - 1_GiB;
         const s64 min_spacing_critical = device_local_memory - 512_MiB;
-        const s64 mem_threshold = (std::min)(device_local_memory, TARGET_THRESHOLD);
+        s64 target_thresh = TARGET_THRESHOLD;
+        if (device_local_memory <= static_cast<s64>(3_GiB)) {
+            target_thresh = static_cast<s64>(2048_MiB);
+        } else if (device_local_memory <= static_cast<s64>(4_GiB)) {
+            target_thresh = static_cast<s64>(2600_MiB);
+        } else if (device_local_memory <= static_cast<s64>(6_GiB)) {
+            target_thresh = static_cast<s64>(3800_MiB);
+        }
+        const s64 mem_threshold = (std::min)(device_local_memory, target_thresh);
         const s64 min_vacancy_expected = (6 * mem_threshold) / 10;
         const s64 min_vacancy_critical = (2 * mem_threshold) / 10;
         expected_memory = static_cast<u64>(

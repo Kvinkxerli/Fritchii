@@ -146,6 +146,11 @@ public:
     [[nodiscard]] std::chrono::microseconds GetGlobalTimeUs() const noexcept;
     [[nodiscard]] std::chrono::nanoseconds GetGlobalTimeNs() const noexcept;
 
+    /// Global time (GetGlobalTimeNs) at which emulation last resumed from a pause.
+    [[nodiscard]] std::chrono::nanoseconds GetPauseEndTime() const noexcept {
+        return std::chrono::nanoseconds{pause_end_time.load(std::memory_order_relaxed)};
+    }
+
     /// Checks for events manually and returns time in nanoseconds for next event, threadsafe.
     std::optional<s64> Advance();
 
@@ -172,7 +177,7 @@ public:
     /// The earliest precise event's time after Advance (max: none). Timer thread only.
     s64 next_precise_ns = (std::numeric_limits<s64>::max)();
     u64 event_fifo_id = 0;
-    s64 pause_end_time{};
+    std::atomic<s64> pause_end_time{};
     /// Cycle timing
     u64 cpu_ticks{};
     s64 downcount{};
