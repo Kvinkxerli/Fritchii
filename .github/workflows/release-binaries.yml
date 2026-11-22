@@ -364,7 +364,15 @@ jobs:
         shell: bash
         run: |
           if command -v ccache > /dev/null; then ccache --zero-stats; else sccache --zero-stats; fi
-          cmake --build build/release --target yuzu lichii_forwarder --parallel
+          cmake --build build/release --target yuzu lichii_forwarder --parallel 2>&1 | tee build.log
+          status=${PIPESTATUS[0]}
+          if [ $status -ne 0 ]; then
+            echo "### Build Error Log" >> $GITHUB_STEP_SUMMARY
+            echo '```text' >> $GITHUB_STEP_SUMMARY
+            grep -E -C 2 -i "error C|fatal error|FAILED:" build.log | tail -n 50 >> $GITHUB_STEP_SUMMARY || tail -n 50 build.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            exit $status
+          fi
           if command -v ccache > /dev/null; then ccache --show-stats; else sccache --show-stats; fi
 
       - name: Build MinGW PGO

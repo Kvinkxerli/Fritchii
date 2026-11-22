@@ -3432,9 +3432,9 @@ private:
             std::scoped_lock lk{m_mutex};
             const auto acquired = m_acquired_image;
             const auto is_acquired = [&](const Output& output) { return acquired.has_value() && output.image == *acquired; };
-            if (acquired && *acquired != w[2] && m_registered.contains(*acquired) &&
-                std::ranges::find(m_free, *acquired) == m_free.end() &&
-                std::ranges::none_of(m_outputs, is_acquired)) {
+            if (acquired && *acquired != w[2] && m_registered.count(*acquired) > 0 &&
+                std::find(m_free.begin(), m_free.end(), *acquired) == m_free.end() &&
+                std::none_of(m_outputs.begin(), m_outputs.end(), is_acquired)) {
                 m_movie_clock.Released(HostTimeUs(),
                                        Core::g_nx2_present_count.load(std::memory_order_relaxed));
             }
