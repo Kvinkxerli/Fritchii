@@ -4,6 +4,7 @@
 #pragma once
 
 #include <algorithm>
+#include <ranges>
 #include "common/nx2_hitch.h"
 #include "common/nx2_timeline.h"
 #include <array>
@@ -3430,7 +3431,7 @@ private:
         {
             std::scoped_lock lk{m_mutex};
             const auto acquired = m_acquired_image;
-            const auto is_acquired = [&](const Output& output) { return output.image == acquired; };
+            const auto is_acquired = [&](const Output& output) { return acquired.has_value() && output.image == *acquired; };
             if (acquired && *acquired != w[2] && m_registered.contains(*acquired) &&
                 std::ranges::find(m_free, *acquired) == m_free.end() &&
                 std::ranges::none_of(m_outputs, is_acquired)) {
@@ -3834,6 +3835,7 @@ private:
             }
             m_decoded.pop_front();
             ++m_frames_dropped;
+            ++m_sync.dropped;
             ++m_dropped_in_a_row;
         }
         const Decoded& front = m_decoded.front();
@@ -4117,9 +4119,8 @@ private:
                  t.pickup.Average(), t.pickup.max_ms, m_inputs.Size(), m_decoded.size(),
                  m_outputs.size(), m_free.size(), t.dropped, t.held,
                  !Nx2VideoPtsSyncEnabled() ? "off"
-                 : !m_clock.started        ? "idle"
-                 : m_clock.audio           ? "audio"
-                                           : "wall",
+                 : !m_movie_clock.Due(HostTimeUs(), PauseEndUs()).has_value() ? "idle"
+                                           : "movie",
                  t.hardware ? "GPU" : "CPU", note);
         t.last_late_ms = late_ms;
         t.window0 = now;
