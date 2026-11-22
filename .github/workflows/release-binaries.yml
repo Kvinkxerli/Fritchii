@@ -251,7 +251,6 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release
             -DBUILD_TESTING=OFF
             -DYUZU_TESTS=OFF
-            -DYUZU_CMD=ON
             -DYUZU_ROOM=OFF
             -DYUZU_ROOM_STANDALONE=OFF
             -DYUZU_USE_BUNDLED_QT=OFF
@@ -287,7 +286,6 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release
           -DBUILD_TESTING=OFF
           -DYUZU_TESTS=OFF
-          -DYUZU_CMD=ON
           -DYUZU_ROOM=OFF
           -DYUZU_ROOM_STANDALONE=OFF
           -DYUZU_USE_BUNDLED_QT=OFF
@@ -366,7 +364,7 @@ jobs:
         shell: bash
         run: |
           if command -v ccache > /dev/null; then ccache --zero-stats; else sccache --zero-stats; fi
-          cmake --build build/release --target yuzu yuzu-cmd --parallel
+          cmake --build build/release --target yuzu lichii_forwarder --parallel
           if command -v ccache > /dev/null; then ccache --show-stats; else sccache --show-stats; fi
 
       - name: Build MinGW PGO
@@ -451,7 +449,7 @@ jobs:
         if: matrix.platform == 'windows-x86_64'
         shell: pwsh
         run: |
-          foreach ($exe in 'fritchii.exe', 'lichii.exe', 'eden-cli.exe') {
+          foreach ($exe in 'fritchii.exe', 'lichii.exe') {
             if (-not (Test-Path "build/release/bin/$exe")) {
               throw "build/release/bin/$exe was not produced"
             }
