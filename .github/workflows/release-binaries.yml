@@ -362,6 +362,8 @@ jobs:
       - name: Build
         if: ${{ ! matrix.mingw }}
         shell: bash
+        env:
+          FRITCHII_SHADER_STAMP_ANY: 1
         run: |
           if command -v ccache > /dev/null; then ccache --zero-stats; else sccache --zero-stats; fi
           cmake --build build/release --target yuzu lichii_forwarder --parallel 2>&1 | tee build.log

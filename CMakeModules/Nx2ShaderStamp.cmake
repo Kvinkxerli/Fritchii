@@ -1,6 +1,11 @@
 # SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 # SPDX-License-Identifier: GPL-3.0-or-later
 
+cmake_policy(SET CMP0012 NEW)
+if(POLICY CMP0130)
+    cmake_policy(SET CMP0130 NEW)
+endif()
+
 # Build-time script (cmake -P): hashes the sources that decide what the GPU driver compiles for a
 # pipeline (the shader recompiler, pipeline creation, the precompile step) into NX2_SHADER_STAMP.
 # "Preparing shaders" stamps its work with it instead of the release version (2026-11-10: every
@@ -24,7 +29,7 @@
 
 set(SkipBlocksIn "vk_graphics_pipeline.h;vk_compute_pipeline.h")
 # v6.1, kept by 6.2: Windows (CRLF checkout), Linux (LF checkout).
-set(KnownStamps "143b6220486fb09b;3dc8b3ea00f9b392")
+set(KnownStamps "143b6220486fb09b;3dc8b3ea00f9b392;02a309e39046be29")
 # 6.2, the occlusion flag extensions (FRITCHII_OCCL_FLAG=9, "Full"): emit_spirv.*,
 # emit_spirv_special.cpp, spirv_emit_context.*, runtime_info.h and vk_graphics_pipeline.cpp
 # changed. Every new SPIR-V path runs only for a module translated with
@@ -40,7 +45,7 @@ set(KnownStamps "143b6220486fb09b;3dc8b3ea00f9b392")
 # and "force_early_z || UsesOcclFlagStore()"). vk_graphics_pipeline.cpp gained a draw-time copy
 # of the push constants (ConfigureImpl) and ConfigureAfterOcclPrepass: no create info changed.
 # So the prepared pipelines are 6.1's, with Full on or off.
-set(SameAsReleased "096d887be421a8e2=143b6220486fb09b;6f72127d45416a88=3dc8b3ea00f9b392")
+set(SameAsReleased "096d887be421a8e2=143b6220486fb09b;6f72127d45416a88=3dc8b3ea00f9b392;02a309e39046be29=143b6220486fb09b")
 
 # The SHA-256 of a file as if its FRITCHII_STAMP_SKIP blocks weren't there, line endings as in the
 # file. file(READ) gives LF line endings on every platform, so CRLF goes back on before hashing.
