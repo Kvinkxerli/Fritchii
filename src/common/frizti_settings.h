@@ -20,7 +20,7 @@ inline constexpr u32 Revision = 15; // 15: Fritchii v6.5 (AMD Radeon: occlusion 
 inline constexpr u64 OcarinaOfTimeProgramId = 0x0400486024DEC000ULL;
 
 // The tuned settings. Frizti's value is each setting's default in settings.h.
-std::vector<BasicSetting*> TunedSettings(Values& values);
+std::vector<BasicSetting*> TunedSettings(Values& settings_values);
 
 // What Frizti last wrote for the tuned settings (config/frizti.ini, which only Frizti writes).
 struct Record {
@@ -66,11 +66,11 @@ std::vector<Moved> FoldPerGame(std::span<BasicSetting* const> settings);
 
 // The same for the controls: a per-game input profile becomes that player's main controls.
 // Returns "player_N_profile" changes for the players whose main profile changed.
-std::vector<Change> FoldPerGamePlayers(Values& values);
+std::vector<Change> FoldPerGamePlayers(Values& settings_values);
 
 // Docked mode can't use the handheld controller: player 1 becomes a Pro Controller, as the
 // docked toggle does.
-std::vector<Change> FixDockedController(Values& values);
+std::vector<Change> FixDockedController(Values& settings_values);
 
 std::map<std::string, std::string> GlobalValues(std::span<BasicSetting* const> settings);
 std::map<std::string, std::string> PerGameValues(std::span<BasicSetting* const> settings);
