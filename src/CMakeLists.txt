@@ -110,11 +110,11 @@ if (MSVC AND NOT CXX_CLANG)
         /we4265 # 'class': class has virtual functions, but destructor is not virtual
         /we4388 # 'expression': signed/unsigned mismatch
         /we4389 # 'operator': signed/unsigned mismatch
-        /we4456 # Declaration of 'identifier' hides previous local declaration
-        /we4457 # Declaration of 'identifier' hides function parameter
-        /we4458 # Declaration of 'identifier' hides class member
-        /we4459 # Declaration of 'identifier' hides global declaration
-        /w4505 # 'function': unreferenced local function has been removed
+        /wd4456 # Declaration of 'identifier' hides previous local declaration
+        /wd4457 # Declaration of 'identifier' hides function parameter
+        /wd4458 # Declaration of 'identifier' hides class member
+        /wd4459 # Declaration of 'identifier' hides global declaration
+        /wd4505 # 'function': unreferenced local function has been removed
         /we4547 # 'operator': operator before comma has no effect; expected operator with side-effect
         /we4549 # 'operator1': operator before comma has no effect; did you intend 'operator2'?
         /we4555 # Expression has no effect; expected expression with side-effect

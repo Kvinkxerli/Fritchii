@@ -213,7 +213,7 @@ void MaxwellDMA::Launch() {
                    launch.dst_memory_layout == LaunchDMA::MemoryLayout::PITCH) {
             const u64 lines = regs.line_count;
             const u64 span =
-                lines == 0 ? 0 : u64{regs.pitch_out} * (lines - 1) + regs.line_length_in;
+                lines == 0 ? 0 : static_cast<u64>(regs.pitch_out) * (lines - 1) + regs.line_length_in;
             Stats::StreamWrite(Stats::Write::DmaLinear, device, u64{regs.line_length_in} * lines,
                                span);
         } else {
