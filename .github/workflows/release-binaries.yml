@@ -10,6 +10,7 @@ on:
   push:
     branches:
       - nx2-experimental
+      - v6.5-custom-avsync
     # A binary only changes when build inputs change; docs-only pushes skip the build.
     paths:
       - "src/**"
