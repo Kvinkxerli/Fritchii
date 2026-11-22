@@ -9037,6 +9037,12 @@ bool RasterizerVulkan::OcarinaTemporalEnabled() const {
     }
     // Which upscaler OoT got and from what (2026-11-11: a player with DLSS on and Streamline
     // loaded had no DLSS in 10 minutes, and the log couldn't say why).
+#ifdef EGLANTINE_STREAMLINE
+    const char* const dlss_status =
+        Streamline::IsDlssAvailable() ? "DLSS available" : "DLSS not available";
+#else
+    constexpr const char* dlss_status = "no DLSS in this build";
+#endif
     LOG_INFO(Render_Vulkan,
              "Ocarina temporal: upscaler {}{} (DLSS setting {}, OoT anti-aliasing {}, {})",
              *oot_backend == VideoCommon::OcarinaUpscaleBackend::Dlss  ? "DLSS"
@@ -9046,12 +9052,7 @@ bool RasterizerVulkan::OcarinaTemporalEnabled() const {
              oot_fsr4_unjittered ? ", no camera jitter" : "",
              Settings::values.nvidia_dlss.GetValue() ? "on" : "off",
              Settings::CanonicalizeEnum(Settings::values.oot_anti_aliasing.GetValue()),
-#ifdef EGLANTINE_STREAMLINE
-             Streamline::IsDlssAvailable() ? "DLSS available" : "DLSS not available"
-#else
-             "no DLSS in this build"
-#endif
-    );
+             dlss_status);
     if (*oot_backend == VideoCommon::OcarinaUpscaleBackend::Native &&
         VideoCommon::OcarinaFsrChosen(Settings::values.oot_anti_aliasing.GetValue()) &&
         !Fsr3Upscaler::IsSupported(device)) {
