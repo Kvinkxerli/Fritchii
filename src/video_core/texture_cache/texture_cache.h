@@ -1301,10 +1301,14 @@ void TextureCache<P>::ApplyThresholdOverrides(bool log) {
             const u64 margin = (std::min)(budget / 8, u64{1_GiB});
             max_critical = (std::max)(max_critical, budget - margin - 512_MiB);
         }
+        if (budget <= 4_GiB) {
+            max_critical = (std::min)(max_critical, u64{2600_MiB});
+        }
     }
     critical_memory = (std::min)(critical_memory, max_critical);
+    const u64 expected_margin = critical_memory <= 2600_MiB ? u64{650_MiB} : u64{768_MiB};
     expected_memory =
-        (std::min)(expected_memory, critical_memory - (std::min)(critical_memory, u64{768_MiB}));
+        (std::min)(expected_memory, critical_memory - (std::min)(critical_memory, expected_margin));
     minimum_memory =
         (std::min)(minimum_memory, expected_memory - (std::min)(expected_memory, u64{1_GiB}));
     // EDEN_NX2_TC_CEILING_MIB: a ceiling for the critical threshold (expected 1.5 GiB under it),

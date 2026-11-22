@@ -197,6 +197,10 @@ Decoder::Decoder(Tegra::Host1x::NvdecCommon::VideoCodec codec) {
         }
     }
 #endif
+    if (!m_codec && Settings::values.nvdec_emulation.GetValue() == Settings::NvdecEmulation::Gpu &&
+        av_codec == AV_CODEC_ID_AV1) {
+        m_codec = avcodec_find_decoder_by_name("av1");
+    }
     if (!m_codec) {
         m_codec = avcodec_find_decoder(av_codec);
     }
