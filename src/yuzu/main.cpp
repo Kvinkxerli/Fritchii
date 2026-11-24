@@ -291,6 +291,8 @@ constexpr std::pair<const char*, const char*> BuiltinSwitches[] = {
     // nx2_switches.txt gets exactly the tested build. Values as tested; each stays live or
     // overridable in nx2_switches.txt (=0 turns one off). Linux gets the set its test builds ran.
     {"EDEN_NX2_SPLIT", "2"},              {"EDEN_NX2_FENCE_BATCH", "1"},
+    {"FRITCHII_DEPTH_POOL_FIT", "3"},     {"FRITCHII_HOSTTIMING_SPIN_BUDGET", "20"},
+    {"FRITCHII_HOSTTIMING_OFF_GPU", "1"}, {"FRITCHII_DLSS_LOW_VRAM_CNN", "1"},
     // Recompiler
     {"FRITCHII_JIT_INDIRECT_CACHE", "2"}, {"FRITCHII_JIT_RSQRT_ZERO", "2"},
     {"FRITCHII_JIT_NO_FRAME_POINTER", "1"}, {"FRITCHII_JIT_FLAG_BRANCH", "2"},

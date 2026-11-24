@@ -16,6 +16,9 @@ namespace Vulkan {
 struct DisplayRefresh {
     double period_ns;
     std::string display; ///< Which display and source, for the log
+    /// The fastest refresh the display offers at its current size, 0 = unknown. Above the
+    /// current rate with dynamic refresh rate or adaptive sync: what a game can be shown at.
+    double fastest_ns{};
 };
 
 /// The refresh period of the display a window is on (Windows; nullopt elsewhere or on failure).
@@ -30,6 +33,7 @@ private:
     std::string device;   ///< GDI name of the display the rate below belongs to
     u32 nominal_hz{};     ///< Its integer rate when the rate was read
     double rational_ns{}; ///< From the display configuration; 0: unavailable
+    u32 fastest_hz{};     ///< The fastest mode at the display's current size
     std::chrono::steady_clock::time_point stale_at{};
 };
 
@@ -113,6 +117,7 @@ private:
     bool broken{};           ///< Present wait does not signal here: pacing stays off
     u32 shown_wait_misses{}; ///< In a row
     double refresh_ns{1e9 / 60.0};
+    double fastest_ns{}; ///< DisplayRefresh::fastest_ns of the last query
     bool refresh_known{};
     Clock::time_point next_refresh_query{};
     DisplayRefreshQuery refresh_query;

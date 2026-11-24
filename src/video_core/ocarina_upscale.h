@@ -166,6 +166,9 @@ constexpr OcarinaOutputSetting ResolveOcarinaUpscaleOutput(unsigned requested,
                                                            unsigned long long vram,
                                                            bool small_card) {
     if (requested == 0) {
+        if (small_card || (vram != 0 && vram < (5ULL << 30))) {
+            return {1440, "Auto capped to 1440p under 5 GiB"};
+        }
         return {0, "Auto, as before"};
     }
     if (!OcarinaUpscaleOutputKnown(requested)) {

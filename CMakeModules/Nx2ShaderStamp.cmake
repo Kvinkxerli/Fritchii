@@ -1,6 +1,11 @@
 # SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 # SPDX-License-Identifier: GPL-3.0-or-later
 
+cmake_policy(SET CMP0012 NEW)
+if(POLICY CMP0130)
+    cmake_policy(SET CMP0130 NEW)
+endif()
+
 # Build-time script (cmake -P): hashes the sources that decide what the GPU driver compiles for a
 # pipeline (the shader recompiler, pipeline creation, the precompile step) into NX2_SHADER_STAMP.
 # "Preparing shaders" stamps its work with it instead of the release version (2026-11-10: every

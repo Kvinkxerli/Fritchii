@@ -170,7 +170,7 @@ private:
     u64 last_raw{};
     u64 last_unwrapped{};
     bool have_raw{};
-    u64 previous_end_ns{};     ///< the previous read submission's end (GPU clock, ns)
+    double previous_end_ns{};  ///< the previous read submission's end (GPU clock, ns)
     u64 previous_sequence{~u64{0}};
     double offset_min{1e300};  ///< min over this window of GPU start - CPU submit (ns)
     double offset_min_previous{1e300};

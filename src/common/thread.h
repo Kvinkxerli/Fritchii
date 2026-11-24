@@ -130,6 +130,14 @@ enum class ThreadPlacement : u32 {
 };
 
 void SetCurrentThreadPriority(ThreadPriority new_priority);
+/// OS thread id for SetNativeThreadPriority: GetCurrentThreadId on Windows, gettid on Linux.
+[[nodiscard]] u64 GetCurrentNativeThreadId();
+/// Raise or lower another thread of this process. no-op if native_id is 0.
+void SetNativeThreadPriority(u64 native_id, ThreadPriority new_priority);
+/// Saved native priority (Win32 GetThreadPriority / Linux nice). Used to restore a boosted builder.
+[[nodiscard]] int GetNativeThreadNice(u64 native_id);
+/// Restore a native priority previously read with GetNativeThreadNice.
+void SetNativeThreadNice(u64 native_id, int nice_value);
 void SetCurrentThreadName(const char* name);
 void SetCurrentThreadToPerformanceCores();
 

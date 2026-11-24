@@ -141,6 +141,20 @@ std::optional<DisplayRefresh> DisplayRefreshQuery::Query([[maybe_unused]] void* 
             device = gdi_name;
             nominal_hz = hz;
             rational_ns = QueryPathPeriod(info.szDevice);
+            // Windows' dynamic refresh rate keeps the desktop at its low rate (60 Hz) and raises
+            // it only for moving content, so the current mode can be below what the game gets
+            fastest_hz = hz;
+            for (DWORD index = 0;; ++index) {
+                DEVMODEW other{};
+                other.dmSize = sizeof(other);
+                if (!EnumDisplaySettingsW(info.szDevice, index, &other)) {
+                    break;
+                }
+                if (other.dmPelsWidth == mode.dmPelsWidth &&
+                    other.dmPelsHeight == mode.dmPelsHeight && other.dmDisplayFrequency > 1) {
+                    fastest_hz = (std::max)(fastest_hz, static_cast<u32>(other.dmDisplayFrequency));
+                }
+            }
             stale_at = now + std::chrono::seconds{30};
         }
 
@@ -150,11 +164,14 @@ std::optional<DisplayRefresh> DisplayRefreshQuery::Query([[maybe_unused]] void* 
         } else if (hz != 0) {
             result = DisplayRefresh{1e9 / hz, name + ", display settings"};
         }
+        if (result && fastest_hz > hz) {
+            result->fastest_ns = 1e9 / fastest_hz;
+        }
         if (result) {
             // DWM's timing is the primary display's. Its measured period is the most precise
             // one there, and the game's frame clock follows it (genlock).
             if (primary && dwm.measured && Agrees(*dwm.measured, result->period_ns)) {
-                return DisplayRefresh{*dwm.measured, name + ", DWM"};
+                return DisplayRefresh{*dwm.measured, name + ", DWM", result->fastest_ns};
             }
             return result;
         }
@@ -207,14 +224,21 @@ void HostPacer::Refresh(Clock::time_point now, bool allowed, void* native_window
             refresh && refresh->period_ns > 2e6 && refresh->period_ns < 50e6) {
             const double period = refresh->period_ns;
             if (!refresh_known || std::abs(period - refresh_ns) > refresh_ns * 0.01 ||
-                refresh->display != refresh_display) {
-                LOG_INFO(Render_Vulkan, "Host pacing: display refresh {:.4f} Hz (monitor {})",
-                         1e9 / period, refresh->display);
+                refresh->display != refresh_display || refresh->fastest_ns != fastest_ns) {
+                LOG_INFO(Render_Vulkan,
+                         "Host pacing: display refresh {:.4f} Hz (monitor {}){}", 1e9 / period,
+                         refresh->display,
+                         refresh->fastest_ns > 0.0
+                             ? fmt::format("; up to {:.0f} Hz with dynamic refresh rate or "
+                                           "adaptive sync",
+                                           1e9 / refresh->fastest_ns)
+                             : std::string{});
                 // A new rate or another display: its own refresh grid.
                 vblank.reset();
                 refresh_display = refresh->display;
             }
             refresh_ns = period;
+            fastest_ns = refresh->fastest_ns;
             refresh_known = true;
         }
     }
@@ -230,8 +254,10 @@ void HostPacer::Refresh(Clock::time_point now, bool allowed, void* native_window
     }
     VideoCommon::Nx2Perf::g_host_refresh_ns.store(
         pacing ? static_cast<long long>(refresh_ns) : 0, std::memory_order_relaxed);
+    // The high refresh rate cap ("Display"): the fastest rate the display can show the game at
     VideoCommon::Nx2Perf::g_display_refresh_ns.store(
-        refresh_known ? static_cast<long long>(refresh_ns) : 0, std::memory_order_relaxed);
+        refresh_known ? static_cast<long long>(fastest_ns > 0.0 ? fastest_ns : refresh_ns) : 0,
+        std::memory_order_relaxed);
 }
 
 double HostPacer::LeadNs() const {

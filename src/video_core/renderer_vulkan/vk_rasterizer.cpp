@@ -3278,7 +3278,11 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
         const auto target_id = texture_cache.GetRenderTargets().color_buffer_ids[0];
         if (target_id) {
             const auto& target = texture_cache.GetImageView(target_id);
-            if (target.size.width == 2560 && target.size.height == 1440 &&
+            const bool present_extent_match =
+                (target.size.width == 2560 && target.size.height == 1440) ||
+                (!Settings::IsDockedMode() && target.size.width == 1280 &&
+                 target.size.height == 720);
+            if (present_extent_match &&
                 target.format == VideoCore::Surface::PixelFormat::A8B8G8R8_SRGB) {
                 oot_4k_guest_present = target.ImageHandle();
             }
@@ -3295,10 +3299,13 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
             const auto& scene = texture_cache.GetImageView(scene_id);
             // FRITCHII_DLSS_SCALED: a scaled scene is taken at its scaled size; the mask is
             // used only when that matches the upscaler's render size (Record checks).
+            const bool allow_scaled = VideoCommon::OcarinaScaledUpscale() ||
+                                      (Settings::values.resolution_info.active &&
+                                       Settings::values.resolution_info.up_factor < 1.0f);
             if (scene.format == VideoCore::Surface::PixelFormat::B10G11R11_FLOAT &&
                 scene.size.width == oot_motion.extent.width &&
                 scene.size.height == oot_motion.extent.height &&
-                (!scene.IsRescaled() || VideoCommon::OcarinaScaledUpscale()) &&
+                (!scene.IsRescaled() || allow_scaled) &&
                 scene.range == VideoCommon::SubresourceRange{}) {
                 oot_effects_scene = scene.Handle(Shader::TextureType::Color2D);
                 oot_effects_view = scene_id;
@@ -9037,6 +9044,12 @@ bool RasterizerVulkan::OcarinaTemporalEnabled() const {
     }
     // Which upscaler OoT got and from what (2026-11-11: a player with DLSS on and Streamline
     // loaded had no DLSS in 10 minutes, and the log couldn't say why).
+#ifdef EGLANTINE_STREAMLINE
+    const char* const dlss_status =
+        Streamline::IsDlssAvailable() ? "DLSS available" : "DLSS not available";
+#else
+    constexpr const char* dlss_status = "no DLSS in this build";
+#endif
     LOG_INFO(Render_Vulkan,
              "Ocarina temporal: upscaler {}{} (DLSS setting {}, OoT anti-aliasing {}, {})",
              *oot_backend == VideoCommon::OcarinaUpscaleBackend::Dlss  ? "DLSS"
@@ -9046,12 +9059,7 @@ bool RasterizerVulkan::OcarinaTemporalEnabled() const {
              oot_fsr4_unjittered ? ", no camera jitter" : "",
              Settings::values.nvidia_dlss.GetValue() ? "on" : "off",
              Settings::CanonicalizeEnum(Settings::values.oot_anti_aliasing.GetValue()),
-#ifdef EGLANTINE_STREAMLINE
-             Streamline::IsDlssAvailable() ? "DLSS available" : "DLSS not available"
-#else
-             "no DLSS in this build"
-#endif
-    );
+             dlss_status);
     if (*oot_backend == VideoCommon::OcarinaUpscaleBackend::Native &&
         VideoCommon::OcarinaFsrChosen(Settings::values.oot_anti_aliasing.GetValue()) &&
         !Fsr3Upscaler::IsSupported(device)) {
@@ -9137,7 +9145,9 @@ void RasterizerVulkan::ApplyOcarinaResolution(u64 title_id) {
     }
     // FRITCHII_DLSS_SCALED: the upscaler takes the scene at the player's scale. The scale is not
     // touched at all, so the prepared pipelines are built once, at that scale.
-    if (VideoCommon::OcarinaScaledUpscale()) {
+    // FRITCHII_DLSS_SCALED (or sub-1x resolution scales like 0.5x / 0.75x): keep the player's
+    // resolution scale intact so 0.5x is not silently overridden back to 1x.
+    if (VideoCommon::OcarinaScaledUpscale() || (resolution.active && resolution.up_factor < 1.0f)) {
         LOG_INFO(Render_Vulkan,
                  "Ocarina temporal: resolution scale {}x kept ({} takes the scaled scene, "
                  "FRITCHII_DLSS_SCALED)",
@@ -9296,9 +9306,12 @@ void RasterizerVulkan::UpdateOcarinaJitter() {
             // FRITCHII_DLSS_SCALED: a scaled scene too. The offset is added after the viewport
             // is scaled, so it stays within half a pixel of the scaled image, the unit the
             // upscaler reads it in.
+            const bool allow_scaled = VideoCommon::OcarinaScaledUpscale() ||
+                                      (Settings::values.resolution_info.active &&
+                                       Settings::values.resolution_info.up_factor < 1.0f);
             if (depth.size.width == oot_motion.extent.width &&
                 depth.size.height == oot_motion.extent.height &&
-                (!depth.IsRescaled() || VideoCommon::OcarinaScaledUpscale())) {
+                (!depth.IsRescaled() || allow_scaled)) {
                 // Halton (2, 3) with AMD's phase count for the last FSR frame's scale. On AMD's
                 // drivers in [0, 1) (FRITCHII_JITTER_EDGE): they clip the viewport's fractional
                 // right and bottom edges.
@@ -9825,7 +9838,9 @@ bool RasterizerVulkan::TryOcarinaUpscale(const ComputePipeline& pipeline, bool r
     const auto* backing = depth.BackingImage();
     // FRITCHII_DLSS_SCALED: scaled images are taken at their real size (checked below). Off, the
     // scale is 1x for the session and nothing is scaled.
-    const bool scaled_mode = VideoCommon::OcarinaScaledUpscale();
+    const bool scaled_mode =
+        VideoCommon::OcarinaScaledUpscale() ||
+        (Settings::values.resolution_info.active && Settings::values.resolution_info.up_factor < 1.0f);
     if (!backing || (depth.IsRescaled() && !scaled_mode) ||
         depth.format != VideoCore::Surface::PixelFormat::D32_FLOAT ||
         depth.range != VideoCommon::SubresourceRange{} || backing->info.num_samples != 1) {
@@ -9896,11 +9911,31 @@ bool RasterizerVulkan::TryOcarinaUpscale(const ComputePipeline& pipeline, bool r
             }
             return fail("scaled colour and depth sizes differ");
         }
-        // The 4K output reads the target back at 2560x1440 (SaveSceneReference).
+        // The composite reads the target back at the game's present size (SaveSceneReference).
+        const bool sub_1x = Settings::values.resolution_info.up_factor < 1.0f;
+        VkExtent2D composite_extent = big_extent;
+        bool keep_composite = upscale_4k && (!target.IsRescaled() || sub_1x);
+        if (target.IsRescaled() && sub_1x && !output_plan.native_aa && !upscale_4k) {
+            const u32 want_h = output_plan.small_height != 0 ? output_plan.small_height
+                               : oot_output_height != 0      ? (std::min)(oot_output_height, 1440U)
+                               : Settings::IsDockedMode()    ? 1440U
+                                                             : 1080U;
+            const u32 capped_h = (std::min)(want_h, color_real.height * 3U);
+            // Snap down to nearest offered height >= 720 that fits <= 3x render height for DLSS.
+            u32 chosen_h = 0;
+            for (const u32 offered : VideoCommon::OcarinaUpscaleOutputs) {
+                if (offered <= capped_h) {
+                    chosen_h = offered;
+                }
+            }
+            if (chosen_h > target_extent.height) {
+                keep_composite = true;
+                composite_extent = {VideoCommon::OcarinaOutputWidth(chosen_h), chosen_h};
+            }
+        }
         const auto choice = VideoCommon::SelectOcarinaScaledOutput(
             {color_real.width, color_real.height}, {target_extent.width, target_extent.height},
-            output_plan.native_aa, upscale_4k && !target.IsRescaled(),
-            {big_extent.width, big_extent.height});
+            output_plan.native_aa, keep_composite, composite_extent);
         render_extent = color_real;
         output_extent = {choice.output.width, choice.output.height};
         use_4k = choice.upscale_4k;
@@ -10876,13 +10911,17 @@ std::optional<FramebufferTextureInfo> RasterizerVulkan::AccelerateDisplay(
         return info;
     }
     // Why this frame shows the game's 1440p image instead of the 4K one, for the log.
+    const bool is_rescaled_sub_1x = scaled && Settings::values.resolution_info.up_factor < 1.0f;
+    const bool guest_present_match =
+        (info.width == 2560 && info.height == 1440) ||
+        (!Settings::IsDockedMode() && info.width == 1280 && info.height == 720);
     const char* const miss =
         *oot_4k_scene_frame != render_trace_frame ? "the 4K scene is from another frame"
         : !info.image || info.image != oot_4k_guest_present || !info.image_view
             ? "not the game's final image"
-        : info.width != 2560 || info.height != 1440 ||
-                // FRITCHII_DLSS_SCALED: the composite samples the game's image by position.
-                (scaled && !VideoCommon::OcarinaScaledUpscale()) ||
+        : !guest_present_match ||
+                // FRITCHII_DLSS_SCALED or sub-1x: the composite samples the game's image by position.
+                (scaled && !VideoCommon::OcarinaScaledUpscale() && !is_rescaled_sub_1x) ||
                 image_view->format != VideoCore::Surface::PixelFormat::A8B8G8R8_UNORM
             ? "unexpected presented image"
         : frame_dump.Capturing() ? "frame dump"

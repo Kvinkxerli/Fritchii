@@ -27,6 +27,7 @@
 #include "common/assert.h"
 #include "common/fs/fs.h"
 #include "common/fs/path_util.h"
+#include "common/host_video_memory.h"
 #include "common/literals.h"
 #include "common/memory_detect.h"
 #include "common/nx2_hitch.h"
@@ -1279,7 +1280,8 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
             // over half a 16 MiB block. 16 = the old size (fewer holes in long sessions, above).
             .preferredLargeHeapBlockSize = [] {
                 const char* value = std::getenv("EDEN_NX2_VMA_BLOCK_MIB");
-                const u64 mib = value != nullptr ? std::strtoull(value, nullptr, 10) : 32;
+                const u64 default_mib = Common::HostHasSmallVideoMemory() ? 16 : 32;
+                const u64 mib = value != nullptr ? std::strtoull(value, nullptr, 10) : default_mib;
                 return (mib != 0 ? mib : 16) * 1024u * 1024u;
             }(),
             .pAllocationCallbacks = nullptr,

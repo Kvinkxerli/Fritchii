@@ -74,6 +74,7 @@ enum class ImageFlagBits : u32 {
     ScaleLimited = 1 << 27,
     /// FRITCHII_SCALE_DEPTH_MAX: a depth image kept native for its scaled size; counted once.
     DepthNative = 1 << 28,
+    TransientTarget = 1 << 29,
 };
 DECLARE_ENUM_FLAG_OPERATORS(ImageFlagBits)
 

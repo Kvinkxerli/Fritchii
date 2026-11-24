@@ -13,9 +13,11 @@
 #include <mutex>
 #include <optional>
 #include <thread>
+#include <utility>
 
 #include "common/assert.h"
 #include "common/hex_util.h"
+#include "common/host_video_memory.h"
 #include "common/logging.h"
 #include "common/settings.h"
 #ifndef _WIN32
@@ -92,6 +94,22 @@ struct BuiltinPatch {
     /// applied (Settings::AppliedOcarinaRenderHeight). 0 = not a render-height patch.
     u32 render_height = 0;
 };
+
+// Max Resolution turns the game's dynamic resolution off, so the 3D stays at 1440p docked. A
+// small card (< 5 GiB) then spends heavy frame time at 1440p; keep dynamic resolution unless overridden.
+bool MaxResolutionFits() {
+    if (const char* const value = std::getenv("EDEN_NX2_NO_MAX_RES"); value && *value == '0') {
+        return true;
+    }
+    const bool small = Common::HostHasSmallVideoMemory();
+    static bool logged{};
+    if (small && !std::exchange(logged, true)) {
+        LOG_INFO(Loader, "Max Resolution (built-in) left out: {} MiB of video memory, the game "
+                         "keeps its dynamic resolution",
+                 Common::HostDedicatedVideoMemory() >> 20);
+    }
+    return !small;
+}
 
 // Ocarina of Time takes its "dynamic resolution disabled" path, so the 3D renders at full scale
 // instead of following the GPU-time controller down to its 480p floor.
@@ -1306,6 +1324,7 @@ constexpr std::array BUILTIN_PATCHES{
         .build_id = "E0F3CCFAF50065AE4EA01EB5AEB13B1A45DA3348",
         .records = MAX_RESOLUTION_RECORDS,
         .disable_env = "EDEN_NX2_NO_MAX_RES",
+        .setting_enabled = &MaxResolutionFits,
     },
     // With Max Resolution the guard house outgrows the initial pool and dereferences a null
     // allocation (the pot room freeze in Castle Town).

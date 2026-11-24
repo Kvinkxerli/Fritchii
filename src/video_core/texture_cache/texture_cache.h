@@ -23,6 +23,7 @@
 #include <boost/container/small_vector.hpp>
 
 #include "common/alignment.h"
+#include "common/host_video_memory.h"
 #include "common/memory_detect.h"
 #include "common/memory_detect.h"
 #include "common/scope_exit.h"
@@ -166,6 +167,16 @@ TextureCache<P>::TextureCache(Runtime& runtime_, Tegra::MaxwellDeviceMemoryManag
         swizzle_chunk_size = 0;
         swizzle_slices_per_batch = 0;
     }
+}
+
+/// EDEN_NX2_ASYNC_RELAXED (1 = on, 0 = off; on by default on small cards only): relocated targets
+/// keep their clear history and a clear one render frame back counts for asynchronous shaders.
+[[nodiscard]] inline bool AsyncRelaxedTargets() {
+    static const bool relaxed = [] {
+        const char* value = std::getenv("EDEN_NX2_ASYNC_RELAXED");
+        return value != nullptr ? value[0] != '0' : Common::HostHasSmallVideoMemory();
+    }();
+    return relaxed;
 }
 
 template <class P>
@@ -1536,16 +1547,33 @@ void TextureCache<P>::EnforceCriticalAtCreate(u64 incoming) {
     bound[NUM_RT] = bound_image(render_targets.depth_buffer_id);
     auto& candidates = create_enforce_candidates;
     candidates.clear();
+    const u64 min_idle = (std::max)(u64{10}, min_age);
     size_t looked = 0;
-    lru_cache.ForEachItemBelow(frame_tick - idle_frames, [&](ImageId image_id) {
-        const Image& image = slot_images[image_id];
-        if (False(image.flags & (ImageFlagBits::IsDecoding | ImageFlagBits::CollectPending |
-                                 ImageFlagBits::GpuModified | ImageFlagBits::BadOverlap)) &&
-            std::ranges::find(bound, image_id) == bound.end()) {
-            candidates.push_back(image_id);
+    const auto collect_candidates = [&](u64 floor_frames) {
+        candidates.clear();
+        looked = 0;
+        if (frame_tick <= floor_frames) {
+            return;
         }
-        return candidates.size() >= MaxPerPass || ++looked >= MaxLooked;
-    });
+        lru_cache.ForEachItemBelow(frame_tick - floor_frames, [&](ImageId image_id) {
+            const Image& image = slot_images[image_id];
+            if (False(image.flags & (ImageFlagBits::IsDecoding | ImageFlagBits::CollectPending |
+                                     ImageFlagBits::GpuModified | ImageFlagBits::BadOverlap)) &&
+                std::ranges::find(bound, image_id) == bound.end()) {
+                candidates.push_back(image_id);
+            }
+            return candidates.size() >= MaxPerPass || ++looked >= MaxLooked;
+        });
+    };
+    collect_candidates(idle_frames);
+    if (candidates.empty() && idle_frames > min_idle) {
+        // ThrashGuard's floor locked out evictions while VRAM is already past critical; fall back
+        // to min_idle and relax thrash_floor so subsequent frames don't stall for 0 MiB freed.
+        collect_candidates(min_idle);
+        if (thrash_floor > min_idle) {
+            thrash_floor /= 2;
+        }
+    }
     if (candidates.empty() && looked < MaxLooked) {
         create_enforce_empty_frame = frame_tick;
     }
@@ -1698,7 +1726,10 @@ void TextureCache<P>::TickThrashGuard() {
             thrash_image_bytes = bytes;
             if constexpr (requires { runtime.GetDeviceMemoryBudget(); }) {
                 const u64 budget = runtime.GetDeviceMemoryBudget();
-                if (budget != 0 && bytes > budget / 4 * 3) {
+                const u64 cap_threshold = budget < 5_GiB ? budget / 2 : budget / 4 * 3;
+                if (budget != 0 &&
+                    (bytes > cap_threshold ||
+                     (pressure && create_enforce_stats.short_of != 0 && floor > 60))) {
                     floor /= 2;
                     ++thrash_stats.capped;
                 }
@@ -1879,6 +1910,9 @@ void TextureCache<P>::TickFrame() {
             }
             if (native_thresholds_applied && budget_check_frames++ % 30 == 0) {
                 const u64 budget = runtime.GetDeviceMemoryBudget();
+                if constexpr (requires { runtime.NoteBudgetPressure(u64{}, u64{}); }) {
+                    runtime.NoteBudgetPressure(runtime.GetDeviceMemoryUsage(), budget);
+                }
                 if (budget > 2_GiB) {
                     const u64 old_critical = critical_memory;
                     const u64 margin = (std::min)(budget / 8, 1_GiB);
@@ -1930,6 +1964,38 @@ void TextureCache<P>::TickFrame() {
                     critical_memory = (std::min)(critical_memory, host_critical);
                     expected_memory = critical_memory - (std::min)(margin, critical_memory / 2);
                     ApplyThresholdOverrides(false);
+                    // Small cards (< 5 GiB): leave images a floor over non-image VRAM so the
+                    // collector does not thrash downloading and re-transcoding active textures.
+                    static const std::optional<u64> forced_floor = []() -> std::optional<u64> {
+                        const char* value = std::getenv("EDEN_NX2_TC_IMAGE_FLOOR_MIB");
+                        return value != nullptr
+                                   ? std::optional<u64>{std::strtoull(value, nullptr, 10) << 20}
+                                   : std::nullopt;
+                    }();
+                    const u64 image_floor = forced_floor.value_or(
+                        budget < 5_GiB ? (std::min)(budget / 2, u64{1536_MiB}) : u64{0});
+                    if (image_floor != 0) {
+                        u64 image_bytes{};
+                        for (const auto [image_id, image] : slot_images) {
+                            image_bytes += ImageMemoryBytes(*image);
+                        }
+                        const u64 other = total_used_memory - (std::min)(total_used_memory, image_bytes);
+                        const u64 floor_expected = other + image_floor;
+                        if (floor_expected > expected_memory) {
+                            static bool image_floor_logged{};
+                            if (!image_floor_logged) {
+                                image_floor_logged = true;
+                                LOG_INFO(HW_GPU,
+                                         "Texture cache image floor: {} MiB in use is not images, "
+                                         "images get {} MiB (expected {} -> {} MiB)",
+                                         other >> 20, image_floor >> 20, expected_memory >> 20,
+                                         floor_expected >> 20);
+                            }
+                            expected_memory = floor_expected;
+                            critical_memory =
+                                (std::max)(critical_memory, floor_expected + image_floor / 4);
+                        }
+                    }
                     // FRITCHII_KEEP_BLOCKS: the kept blocks get what the live usage leaves under
                     // the critical use and half the room above it.
                     if constexpr (requires { runtime.LimitKeptBlocks(u64{}, u64{}); }) {
@@ -2201,6 +2267,52 @@ void TextureCache<P>::TickFrame() {
     }
     SweepUnmapped();
     SweepSuperseded();
+    if (const u64 rt_evict = RtEvictPressureFrames();
+        rt_evict != 0 && total_used_memory > expected_memory) {
+        const DeleteReasonScope delete_reason_scope{*this, DeleteReason::ColdSweep};
+        for (size_t budget = transient_targets.size(); budget != 0 && !transient_targets.empty();
+             --budget) {
+            TransientTarget entry = transient_targets.front();
+            if (frame_tick - entry.check_tick < rt_evict) {
+                break;
+            }
+            transient_targets.pop_front();
+            if (!slot_images.contains(entry.id)) {
+                continue;
+            }
+            Image& image = slot_images[entry.id];
+            if (image.allocation_tick != entry.allocation_tick ||
+                False(image.flags & ImageFlagBits::TransientTarget) ||
+                False(image.flags & ImageFlagBits::Registered)) {
+                continue;
+            }
+            const u64 last_use = lru_cache.Tick(image.lru_index);
+            if (frame_tick - last_use < rt_evict || True(image.flags & ImageFlagBits::IsDecoding)) {
+                if (++entry.survived < 4) {
+                    entry.check_tick = frame_tick;
+                    transient_targets.push_back(entry);
+                } else {
+                    image.flags &= ~ImageFlagBits::TransientTarget;
+                }
+                continue;
+            }
+            MarkStale(image);
+            if (True(image.flags & ImageFlagBits::Tracked)) {
+                UntrackImage(image, entry.id);
+            }
+            UnregisterImage(entry.id);
+            DeleteImage(entry.id, false);
+            ++transient_evictions;
+        }
+    } else if (transient_targets.size() > 8192) {
+        transient_targets.erase(transient_targets.begin(),
+                                transient_targets.begin() + (transient_targets.size() - 8192));
+    }
+    if (frame_tick % 600 == 0 && transient_evictions != logged_transient_evictions) {
+        LOG_INFO(HW_GPU, "RT evict: {} unused fresh render targets deleted early so far, {} waiting",
+                 transient_evictions, transient_targets.size());
+        logged_transient_evictions = transient_evictions;
+    }
     SweepColdImages();
     TickThrashGuard();
     // An image that could not be made at all: the driver is out of memory whatever the counts
@@ -6374,6 +6486,8 @@ u64 TextureCache<P>::ImageMemoryBytes(const Image& image) const {
         True(image.flags & ImageFlagBits::Converted)) {
         tentative_size = TranscodedAstcSize(tentative_size, image.info.format);
     }
+    // Each top level the host leaves out (TrimmedLevels) held about 3/4 of what was left.
+    tentative_size >>= 2 * image.host_level_offset;
     return Common::AlignUp(tentative_size, 1024);
 }
 
@@ -8066,6 +8180,21 @@ ImageViewId TextureCache<P>::FindRenderTargetView(const ImageInfo& info, GPUVAdd
         return NULL_IMAGE_VIEW_ID;
     }
     Image& image = slot_images[image_id];
+    if (RtEvictPressureFrames() != 0 && Tegra::g_nx2_ampere.load(std::memory_order_relaxed) &&
+        image.modification_tick == 0 && True(image.flags & ImageFlagBits::CpuModified) &&
+        False(image.flags & ImageFlagBits::GpuModified) &&
+        False(image.flags & (ImageFlagBits::SparseLayers | ImageFlagBits::SparseTiles |
+                             ImageFlagBits::Unbacked)) &&
+        image.dirty_layers.empty()) {
+        image.flags &= ~ImageFlagBits::CpuModified;
+        if (False(image.flags & ImageFlagBits::Tracked)) {
+            TrackImage(image, image_id);
+        }
+        if (False(image.flags & ImageFlagBits::TransientTarget)) {
+            image.flags |= ImageFlagBits::TransientTarget;
+            transient_targets.push_back({image_id, image.allocation_tick, frame_tick, 0});
+        }
+    }
     const ImageViewType view_type = RenderTargetImageViewType(info);
     SubresourceBase base;
     if (image.info.type == ImageType::Linear) {
@@ -8756,10 +8885,12 @@ void TextureCache<P>::RelocateImage(ImageId image_id, GPUVAddr gpu_addr, DAddr c
     image.write_streak = 0;
     image.relocation_guard_noted = 0;
     image.lost_contents = 0;
-    // A new target to the asynchronous shaders' skip rule too: its draws wait until it was
-    // cleared at this address in two render frames (ClassifyDrawTargets).
-    image.last_clear_frame = ~u64{0};
-    image.previous_clear_frame = ~u64{0};
+    // Relocated per-frame targets on small cards keep clear history under EDEN_NX2_ASYNC_RELAXED
+    // so asynchronous shader builds don't stall on every camera relocation.
+    if (!AsyncRelaxedTargets()) {
+        image.last_clear_frame = ~u64{0};
+        image.previous_clear_frame = ~u64{0};
+    }
     image.drawn_since_clear = false;
     // 5. Page tables, map view, page filter, LRU.
     RegisterImage(image_id);
@@ -9757,9 +9888,16 @@ DrawTargets TextureCache<P>::ClassifyDrawTargets() {
             image = &slot_images[image_id];
         }
         // Not registered yet: the draw is the first use of the target.
+        // A render-frame tick between a target's clear and its draws made a per-frame target
+        // look persistent (its clear was in the frame before): with EDEN_NX2_ASYNC_RELAXED (on
+        // by default on small cards) a clear one render frame back counts as this frame's.
+        u64 clear_frame = render_frame;
+        if (image && AsyncRelaxedTargets() && image->last_clear_frame + 1 == render_frame) {
+            clear_frame = image->last_clear_frame;
+        }
         const DrawTargetClass kind =
             image ? ClassifyClearedTarget(image->last_clear_frame, image->previous_clear_frame,
-                                          render_frame)
+                                          clear_frame)
                   : DrawTargetClass::FirstTime;
         // A target never cleared but written in every recent frame is per-frame too.
         const DrawTargetClass redrawn_kind =

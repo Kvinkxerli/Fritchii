@@ -9301,6 +9301,14 @@ void PipelineCache::ReportKeptDriverCompiles() {
     if (!kept_compiles_session.warned && kept_compiles_session.builds >= 100 &&
         kept_compiles_session.slow * 2 >= kept_compiles_session.builds) {
         kept_compiles_session.warned = true;
+#ifdef _WIN32
+        constexpr const char* nvidia_hint =
+            "NVIDIA: set Shader Cache Size to Unlimited in the NVIDIA Control Panel";
+#else
+        constexpr const char* nvidia_hint =
+            "NVIDIA on Linux: the Driver cache folder line shows the folder and its "
+            "__GL_SHADER_DISK_CACHE variables; keep space free on its disk";
+#endif
         LOG_WARNING(Render_Vulkan,
                     "The driver's cache does not hold the precompiled pipelines: {} of {} prepared "
                     "pipelines were compiled again, each a stall where a draw waits for it. {}",
@@ -9309,12 +9317,7 @@ void PipelineCache::ReportKeptDriverCompiles() {
                         ? "AMD: check Adrenalin > Gaming > Graphics > Shader Cache is on (not Off) "
                           "and never use Reset Shader Cache; the folder sizes in the Driver cache "
                           "folder lines show what the driver kept"
-#ifdef _WIN32
-                        : "NVIDIA: set Shader Cache Size to Unlimited in the NVIDIA Control Panel");
-#else
-                        : "NVIDIA on Linux: the Driver cache folder line shows the folder and its "
-                          "__GL_SHADER_DISK_CACHE variables; keep space free on its disk");
-#endif
+                        : nvidia_hint);
     }
     MaybeAutoAsyncRedrawn();
 }

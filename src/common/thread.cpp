@@ -987,6 +987,108 @@ void SetCurrentThreadPriority(ThreadPriority new_priority) {
 #endif
 }
 
+u64 GetCurrentNativeThreadId() {
+#ifdef _WIN32
+    return static_cast<u64>(GetCurrentThreadId());
+#elif defined(__linux__)
+    return static_cast<u64>(gettid());
+#else
+    return 0;
+#endif
+}
+
+int GetNativeThreadNice(u64 native_id) {
+#ifdef _WIN32
+    if (native_id == 0) {
+        return THREAD_PRIORITY_ERROR_RETURN;
+    }
+    HANDLE handle = OpenThread(THREAD_QUERY_INFORMATION, FALSE, static_cast<DWORD>(native_id));
+    if (handle == nullptr) {
+        return THREAD_PRIORITY_ERROR_RETURN;
+    }
+    const int value = GetThreadPriority(handle);
+    CloseHandle(handle);
+    return value;
+#elif defined(__linux__)
+    if (native_id == 0) {
+        return 0;
+    }
+    errno = 0;
+    const int value = getpriority(PRIO_PROCESS, static_cast<id_t>(native_id));
+    return errno != 0 ? 0 : value;
+#else
+    (void)native_id;
+    return 0;
+#endif
+}
+
+void SetNativeThreadPriority(u64 native_id, ThreadPriority new_priority) {
+    if (native_id == 0) {
+        return;
+    }
+#ifdef _WIN32
+    int windows_priority = THREAD_PRIORITY_NORMAL;
+    switch (new_priority) {
+    case ThreadPriority::Low:
+        windows_priority = THREAD_PRIORITY_BELOW_NORMAL;
+        break;
+    case ThreadPriority::Normal:
+        windows_priority = THREAD_PRIORITY_NORMAL;
+        break;
+    case ThreadPriority::High:
+        windows_priority = THREAD_PRIORITY_ABOVE_NORMAL;
+        break;
+    case ThreadPriority::VeryHigh:
+        windows_priority = THREAD_PRIORITY_HIGHEST;
+        break;
+    case ThreadPriority::Critical:
+        windows_priority = THREAD_PRIORITY_TIME_CRITICAL;
+        break;
+    default:
+        break;
+    }
+    HANDLE handle = OpenThread(THREAD_SET_INFORMATION | THREAD_QUERY_INFORMATION, FALSE,
+                               static_cast<DWORD>(native_id));
+    if (handle == nullptr) {
+        return;
+    }
+    SetThreadPriority(handle, windows_priority);
+    CloseHandle(handle);
+#elif defined(__linux__)
+    const int nice_value = NiceValueForPriority(new_priority);
+    if (setpriority(PRIO_PROCESS, static_cast<id_t>(native_id), nice_value) != 0) {
+        LOG_DEBUG(Common, "Could not set thread {} nice value to {}: {}", native_id, nice_value,
+                  GetLastErrorMsg());
+    }
+#else
+    (void)new_priority;
+#endif
+}
+
+void SetNativeThreadNice(u64 native_id, int nice_value) {
+    if (native_id == 0) {
+        return;
+    }
+#ifdef _WIN32
+    if (nice_value == THREAD_PRIORITY_ERROR_RETURN) {
+        return;
+    }
+    HANDLE handle = OpenThread(THREAD_SET_INFORMATION, FALSE, static_cast<DWORD>(native_id));
+    if (handle == nullptr) {
+        return;
+    }
+    SetThreadPriority(handle, nice_value);
+    CloseHandle(handle);
+#elif defined(__linux__)
+    if (setpriority(PRIO_PROCESS, static_cast<id_t>(native_id), nice_value) != 0) {
+        LOG_DEBUG(Common, "Could not restore thread {} nice value to {}: {}", native_id, nice_value,
+                  GetLastErrorMsg());
+    }
+#else
+    (void)nice_value;
+#endif
+}
+
 void SetCurrentThreadName(const char* name) {
     Nx2SampleProfile::OnThreadNamed(name);
     Nx2Hitch::RegisterThread(name);

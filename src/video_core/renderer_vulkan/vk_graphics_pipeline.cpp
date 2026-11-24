@@ -12,6 +12,7 @@
 #include <chrono>
 #include <string>
 #include <iostream>
+#include <mutex>
 #include <set>
 #include <span>
 #include <unordered_set>
@@ -43,6 +44,7 @@
 #include "video_core/shader_notify.h"
 #include "video_core/memory_stage_link.h"
 #include "video_core/texture_handle_values.h"
+#include "video_core/texture_cache/formatter.h"
 #include "video_core/texture_cache/texture_cache.h"
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/gpu_logging/gpu_logging.h"
@@ -565,6 +567,291 @@ u32 SpecStages(const std::array<bool, NUM_STAGES>& stages,
 
 std::atomic<std::chrono::nanoseconds::rep> hold_time_ns{};
 std::atomic<std::chrono::nanoseconds::rep> hold_time_total_ns{};
+
+/// EDEN_NX2_CLAIM_HELD_BUILDS (default 1): a draw held for a worker-emitted (native) pipeline
+/// whose build no worker has started yet runs that build itself instead of waiting for the
+/// FIFO pool to reach it.
+bool HeldDrawsClaimBuilds() {
+    static const bool enabled = [] {
+        const char* const value = std::getenv("EDEN_NX2_CLAIM_HELD_BUILDS");
+        return value == nullptr || value[0] != '0';
+    }();
+    return enabled;
+}
+
+/// EDEN_NX2_WAIT_LIMIT_MS (default 16; 0 = wait as before): a draw into a depth/shadow/probe
+/// target, or into a target already drawn this session, skips after the cap and retries next
+/// frame. First-time color/UI still waits, so a one-shot menu or title draw is not dropped.
+int WaitLimitMs() {
+    static const int value = [] {
+        const char* const text = std::getenv("EDEN_NX2_WAIT_LIMIT_MS");
+        if (text == nullptr || text[0] == '\0') {
+            return 16;
+        }
+        char* end{};
+        const long parsed = std::strtol(text, &end, 10);
+        if (end == text || parsed < 0 || parsed > 10000) {
+            return 16;
+        }
+        return static_cast<int>(parsed);
+    }();
+    return value;
+}
+
+enum class WaitLimitReason : u8 { None, DepthShadow, Probe, AlreadyDrawn };
+
+const char* WaitLimitReasonName(WaitLimitReason reason) {
+    switch (reason) {
+    case WaitLimitReason::DepthShadow:
+        return "depth/shadow";
+    case WaitLimitReason::Probe:
+        return "probe";
+    case WaitLimitReason::AlreadyDrawn:
+        return "already-drawn";
+    default:
+        return "none";
+    }
+}
+
+const char* DrawTargetKindName(VideoCommon::DrawTargetClass kind) {
+    switch (kind) {
+    case VideoCommon::DrawTargetClass::Recurring:
+        return "recurring";
+    case VideoCommon::DrawTargetClass::FirstTime:
+        return "first-time";
+    case VideoCommon::DrawTargetClass::Persistent:
+        return "persistent";
+    }
+    return "unknown";
+}
+
+bool IsDepthOrStencilFormat(VideoCore::Surface::PixelFormat format) {
+    switch (VideoCore::Surface::GetFormatType(format)) {
+    case VideoCore::Surface::SurfaceType::Depth:
+    case VideoCore::Surface::SurfaceType::Stencil:
+    case VideoCore::Surface::SurfaceType::DepthStencil:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool IsLightingProbe(const VideoCommon::DrawTargets& targets) {
+    if (targets.gpu_addr == 0 || IsDepthOrStencilFormat(targets.format)) {
+        return false;
+    }
+    if ((std::max)(targets.width, targets.height) > 512) {
+        return false;
+    }
+    switch (targets.format) {
+    case VideoCore::Surface::PixelFormat::R16G16B16A16_FLOAT:
+    case VideoCore::Surface::PixelFormat::B10G11R11_FLOAT:
+    case VideoCore::Surface::PixelFormat::R32G32B32A32_FLOAT:
+    case VideoCore::Surface::PixelFormat::R32G32_FLOAT:
+    case VideoCore::Surface::PixelFormat::R32_FLOAT:
+    case VideoCore::Surface::PixelFormat::R16_FLOAT:
+    case VideoCore::Surface::PixelFormat::R16G16_FLOAT:
+    case VideoCore::Surface::PixelFormat::R16G16B16X16_FLOAT:
+    case VideoCore::Surface::PixelFormat::R32G32B32_FLOAT:
+    case VideoCore::Surface::PixelFormat::E5B9G9R9_FLOAT:
+        return true;
+    default:
+        return false;
+    }
+}
+
+struct WaitLimitStats {
+    std::mutex mutex;
+    std::unordered_set<GPUVAddr> drawn;
+    u64 skip_first_time{};
+    u64 skip_persistent{};
+    u64 skip_recurring{};
+    u64 skip_depth{};
+    u64 skip_probe{};
+    u64 skip_already{};
+    u64 finished_in_cap{};
+    u64 boosted{};
+    std::chrono::steady_clock::time_point window{};
+    bool logged_mode{};
+};
+
+WaitLimitStats wait_limit_stats;
+
+void NoteDrawnTarget(const VideoCommon::DrawTargets& targets) {
+    if (targets.gpu_addr == 0) {
+        return;
+    }
+    std::scoped_lock lock{wait_limit_stats.mutex};
+    wait_limit_stats.drawn.insert(targets.gpu_addr);
+}
+
+bool TargetDrawnThisSession(GPUVAddr gpu_addr) {
+    if (gpu_addr == 0) {
+        return false;
+    }
+    std::scoped_lock lock{wait_limit_stats.mutex};
+    return wait_limit_stats.drawn.contains(gpu_addr);
+}
+
+WaitLimitReason WaitLimitReasonFor(const VideoCommon::DrawTargets& targets) {
+    if (WaitLimitMs() <= 0) {
+        return WaitLimitReason::None;
+    }
+    if (IsDepthOrStencilFormat(targets.format)) {
+        return WaitLimitReason::DepthShadow;
+    }
+    if (IsLightingProbe(targets)) {
+        return WaitLimitReason::Probe;
+    }
+    if (TargetDrawnThisSession(targets.gpu_addr)) {
+        return WaitLimitReason::AlreadyDrawn;
+    }
+    return WaitLimitReason::None;
+}
+
+void ReportWaitLimitLocked(WaitLimitStats& stats, std::chrono::steady_clock::time_point now) {
+    if (stats.skip_first_time + stats.skip_persistent + stats.skip_recurring +
+            stats.finished_in_cap + stats.boosted ==
+        0) {
+        stats.window = now;
+        return;
+    }
+    LOG_INFO(Render_Vulkan,
+             "WaitLimit in the last 10 s: skipped {} draws ({} first-time, {} persistent, "
+             "{} recurring; {} depth/shadow, {} probe, {} already-drawn); {} waits finished in "
+             "the cap; boosted {} in-flight builders; cap {} ms",
+             stats.skip_first_time + stats.skip_persistent + stats.skip_recurring,
+             stats.skip_first_time, stats.skip_persistent, stats.skip_recurring, stats.skip_depth,
+             stats.skip_probe, stats.skip_already, stats.finished_in_cap, stats.boosted,
+             WaitLimitMs());
+    stats.skip_first_time = 0;
+    stats.skip_persistent = 0;
+    stats.skip_recurring = 0;
+    stats.skip_depth = 0;
+    stats.skip_probe = 0;
+    stats.skip_already = 0;
+    stats.finished_in_cap = 0;
+    stats.boosted = 0;
+    stats.window = now;
+}
+
+void MaybeReportWaitLimit() {
+    auto& stats = wait_limit_stats;
+    std::scoped_lock lock{stats.mutex};
+    const auto now = std::chrono::steady_clock::now();
+    if (stats.window == std::chrono::steady_clock::time_point{}) {
+        stats.window = now;
+        return;
+    }
+    if (now - stats.window >= std::chrono::seconds{10}) {
+        ReportWaitLimitLocked(stats, now);
+    }
+}
+
+void NoteWaitLimitSkip(const VideoCommon::DrawTargets& targets, WaitLimitReason reason,
+                       std::chrono::nanoseconds held, int limit_ms) {
+    auto& stats = wait_limit_stats;
+    std::scoped_lock lock{stats.mutex};
+    switch (targets.kind) {
+    case VideoCommon::DrawTargetClass::FirstTime:
+        ++stats.skip_first_time;
+        break;
+    case VideoCommon::DrawTargetClass::Persistent:
+        ++stats.skip_persistent;
+        break;
+    case VideoCommon::DrawTargetClass::Recurring:
+        ++stats.skip_recurring;
+        break;
+    }
+    switch (reason) {
+    case WaitLimitReason::DepthShadow:
+        ++stats.skip_depth;
+        break;
+    case WaitLimitReason::Probe:
+        ++stats.skip_probe;
+        break;
+    case WaitLimitReason::AlreadyDrawn:
+        ++stats.skip_already;
+        break;
+    default:
+        break;
+    }
+    LOG_INFO(Render_Vulkan,
+             "WaitLimit: skip {} {}x{} {} {:#x} after {:.1f} ms ({}{}; EDEN_NX2_WAIT_LIMIT_MS={})",
+             DrawTargetKindName(targets.kind), targets.width, targets.height, targets.format,
+             targets.gpu_addr, std::chrono::duration<double, std::milli>(held).count(),
+             WaitLimitReasonName(reason),
+             stats.drawn.contains(targets.gpu_addr) ? ", seen before" : "", limit_ms);
+}
+
+/// Returns false if this draw should be skipped (retry next frame). Records hold time either way.
+bool HoldForPipelineBuild(PipelineBuild& build, Scheduler& scheduler,
+                          GraphicsPipelineLibraryCache* library_cache, TextureCache& texture_cache,
+                          bool worker_only_build) {
+    auto& stats = wait_limit_stats;
+    {
+        std::scoped_lock lock{stats.mutex};
+        if (!stats.logged_mode) {
+            stats.logged_mode = true;
+            LOG_INFO(Render_Vulkan,
+                     "WaitLimit: EDEN_NX2_WAIT_LIMIT_MS={}; depth/shadow/probe and already-drawn "
+                     "targets skip the draw after the cap and retry next frame; first-time "
+                     "color/UI still waits; 0 waits as before",
+                     WaitLimitMs());
+        }
+    }
+    const auto targets = texture_cache.ClassifyDrawTargets();
+    const auto reason = WaitLimitReasonFor(targets);
+    const int limit_ms = WaitLimitMs();
+    if (reason == WaitLimitReason::None) {
+        PipelineBuild* const pending = &build;
+        scheduler.Record([pending, library_cache, worker_only_build](vk::CommandBuffer) {
+            const auto begin = std::chrono::steady_clock::now();
+            const bool boost = !pending->IsBuilt();
+            pending->Wait(!worker_only_build || HeldDrawsClaimBuilds(), -1, true);
+            const auto held = std::chrono::steady_clock::now() - begin;
+            const auto held_ns =
+                std::chrono::duration_cast<std::chrono::nanoseconds>(held).count();
+            hold_time_ns.fetch_add(held_ns, std::memory_order::relaxed);
+            hold_time_total_ns.fetch_add(held_ns, std::memory_order::relaxed);
+            if (library_cache) {
+                library_cache->RecordHeldDraw(held);
+            }
+            if (boost) {
+                std::scoped_lock lock{wait_limit_stats.mutex};
+                ++wait_limit_stats.boosted;
+            }
+        });
+        NoteDrawnTarget(targets);
+        MaybeReportWaitLimit();
+        return true;
+    }
+    build.KickUrgent();
+    const auto begin = std::chrono::steady_clock::now();
+    const bool ready = build.Wait(false, limit_ms, true);
+    const auto held = std::chrono::steady_clock::now() - begin;
+    const auto held_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(held).count();
+    hold_time_ns.fetch_add(held_ns, std::memory_order::relaxed);
+    hold_time_total_ns.fetch_add(held_ns, std::memory_order::relaxed);
+    if (library_cache) {
+        library_cache->RecordHeldDraw(held);
+    }
+    {
+        std::scoped_lock lock{stats.mutex};
+        ++stats.boosted;
+        if (ready) {
+            ++stats.finished_in_cap;
+        }
+    }
+    if (!ready) {
+        NoteWaitLimitSkip(targets, reason, held, limit_ms);
+        MaybeReportWaitLimit();
+        return false;
+    }
+    NoteDrawnTarget(targets);
+    MaybeReportWaitLimit();
+    return true;
+}
 
 // Worker builds of kept SPIR-V (the precompiled fast path): how many the driver compiled again
 // instead of finding in its own cache. On an RX 7900 XT those took 0.2-1.1 s each and the draws
@@ -2797,8 +3084,10 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
         // The mesh program runs as a compute dispatch outside the render pass and writes the
         // triangles the draw then reads; both use the descriptor set committed here.
         scheduler.RequestOutsideRenderPassOperationContext();
-        if (!IsBuilt()) {
-            scheduler.Record([this](vk::CommandBuffer) { build->Wait(!worker_only_build); });
+        if (!IsBuilt() &&
+            !HoldForPipelineBuild(*build, scheduler, library_cache, texture_cache,
+                                  worker_only_build)) {
+            return false;
         }
         // EDEN_NX2_MESH_FIRST: the task (or mesh) compute shader adds the draw's first
         // workgroup index, as the native mesh path does.
@@ -2966,19 +3255,12 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
         scheduler.NoteRenderPassStores();
     }
     if (!IsBuilt()) {
-        // Wait for the pipeline to be built
-        scheduler.Record([this](vk::CommandBuffer) {
-            const auto begin = std::chrono::steady_clock::now();
-            build->Wait(!worker_only_build);
-            const auto held = std::chrono::steady_clock::now() - begin;
-            const auto held_ns =
-                std::chrono::duration_cast<std::chrono::nanoseconds>(held).count();
-            hold_time_ns.fetch_add(held_ns, std::memory_order::relaxed);
-            hold_time_total_ns.fetch_add(held_ns, std::memory_order::relaxed);
-            if (library_cache) {
-                library_cache->RecordHeldDraw(held);
-            }
-        });
+        if (!HoldForPipelineBuild(*build, scheduler, library_cache, texture_cache,
+                                  worker_only_build)) {
+            return false;
+        }
+    } else {
+        NoteDrawnTarget(texture_cache.ClassifyDrawTargets());
     }
     const bool is_rescaling{texture_cache.IsRescaling()};
     const bool update_rescaling{scheduler.UpdateRescaling(is_rescaling, IsMeshPipeline())};

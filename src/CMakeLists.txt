@@ -110,17 +110,17 @@ if (MSVC AND NOT CXX_CLANG)
         /we4265 # 'class': class has virtual functions, but destructor is not virtual
         /we4388 # 'expression': signed/unsigned mismatch
         /we4389 # 'operator': signed/unsigned mismatch
-        /we4456 # Declaration of 'identifier' hides previous local declaration
-        /we4457 # Declaration of 'identifier' hides function parameter
-        /we4458 # Declaration of 'identifier' hides class member
-        /we4459 # Declaration of 'identifier' hides global declaration
-        /w4505 # 'function': unreferenced local function has been removed
+        /wd4456 # Declaration of 'identifier' hides previous local declaration
+        /wd4457 # Declaration of 'identifier' hides function parameter
+        /wd4458 # Declaration of 'identifier' hides class member
+        /wd4459 # Declaration of 'identifier' hides global declaration
+        /wd4505 # 'function': unreferenced local function has been removed
         /we4547 # 'operator': operator before comma has no effect; expected operator with side-effect
         /we4549 # 'operator1': operator before comma has no effect; did you intend 'operator2'?
         /we4555 # Expression has no effect; expected expression with side-effect
         /we4826 # Conversion from 'type1' to 'type2' is sign-extended. This may cause unexpected runtime behavior.
         /we5038 # data member 'member1' will be initialized after data member 'member2'
-        /we5233 # explicit lambda capture 'identifier' is not used
+        /wd5233 # explicit lambda capture 'identifier' is not used
         /we5245 # 'function': unreferenced function with internal linkage has been removed
 
         /wd4100 # 'identifier': unreferenced formal parameter

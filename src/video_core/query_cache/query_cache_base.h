@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <functional>
 #include <mutex>
 #include <optional>
@@ -93,7 +94,10 @@ public:
     /// unregistered yet). Only the cache mutex: callable from the split front.
     [[nodiscard]] bool HasCachedReports(VAddr addr, size_t size) {
         bool result = false;
-        IterateCache<false>(addr, size, [&result](QueryLocation) { result = true; });
+        IterateCache<false>(addr, size, [&result](QueryLocation) {
+            result = true;
+            return true;
+        });
         return result;
     }
 
@@ -101,7 +105,7 @@ public:
     [[nodiscard]] bool IsRegionGpuModified(VAddr addr, size_t size) {
         bool result = false;
         IterateCache<false>(addr, size, [this, &result](QueryLocation location) {
-            result |= IsQueryDirty(location);
+            result = IsQueryDirty(location);
             return result;
         });
         return result;
@@ -188,6 +192,44 @@ protected:
                 continue;
             }
             auto& contents = it->second;
+            if constexpr (!remove_from_cache) {
+                // Macro DMA often reads a few words on a page with hundreds of occlusion
+                // reports. Probe the possible starts of overlapping reports on that page.
+                constexpr u64 MaxProbes = 32;
+                constexpr u64 ReportOverlap = sizeof(u32) - 1;
+                const u64 first = (std::max)(page_start + ReportOverlap, addr_begin) -
+                                  page_start - ReportOverlap;
+                const u64 limit = (std::min<u64>)(addr_end - page_start, Core::DEVICE_PAGESIZE);
+                if (limit > first && limit - first <= MaxProbes && limit - first < contents.size()) {
+                    auto match = contents.end();
+                    u64 offset = first;
+                    for (; offset < limit; ++offset) {
+                        const auto query = contents.find(static_cast<u32>(offset));
+                        if (query == contents.end()) {
+                            continue;
+                        }
+                        if constexpr (RETURNS_BOOL) {
+                            if (func(query->second)) {
+                                return;
+                            }
+                        } else {
+                            // Keep the original write order when several reports are flushed.
+                            if (match != contents.end()) {
+                                break;
+                            }
+                            match = query;
+                        }
+                    }
+                    if (offset == limit) {
+                        if constexpr (!RETURNS_BOOL) {
+                            if (match != contents.end()) {
+                                func(match->second);
+                            }
+                        }
+                        continue;
+                    }
+                }
+            }
             bool matched = false;
             for (auto& query : contents) {
                 if (!in_range(query.first)) {

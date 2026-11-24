@@ -9512,13 +9512,13 @@ void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
 #ifdef YUZU_LEGACY
     if (!do_not_mark || !immediately_free)
 #endif
-        delayed_destruction_ring.Push(std::move(slot_buffers[buffer_id]), [this] {
-            if constexpr (IS_OPENGL) {
-                return u64{0};
-            } else {
-                return runtime.CurrentTick();
-            }
-        }());
+    {
+        u64 current_tick = 0;
+        if constexpr (!IS_OPENGL) {
+            current_tick = runtime.CurrentTick();
+        }
+        delayed_destruction_ring.Push(std::move(slot_buffers[buffer_id]), current_tick);
+    }
 
     slot_buffers.erase(buffer_id);
 }

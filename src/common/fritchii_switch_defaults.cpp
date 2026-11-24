@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <string>
 
+#include "common/host_video_memory.h"
 #include "video_core/nx2_debug_control.h"
 
 namespace VideoCore::Nx2Debug {
@@ -235,6 +236,10 @@ void LoadExperiments() {
         // EXP39 = 3: publish to a back that waits after 8 words, no snapshot refresh of entries
         // that ran (see the EXP39 notes in docs/fritchii/switches.md). Timing only.
         g_experiments[39].store(3, std::memory_order_relaxed);
+        // EXP27 = 5 (small cards): the front publishes before it waits and the back prefetches the ring.
+        if (Common::HostHasSmallVideoMemory()) {
+            g_experiments[27].store(5, std::memory_order_relaxed);
+        }
         for (int n = 0; n < ExperimentCount; ++n) {
             const std::string name = "EDEN_NX2_EXP" + std::to_string(n);
             if (const char* value = std::getenv(name.c_str())) {

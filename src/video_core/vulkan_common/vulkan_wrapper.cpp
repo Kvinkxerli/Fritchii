@@ -75,6 +75,16 @@ void SortPhysicalDevices(std::vector<VkPhysicalDevice>& devices, const InstanceD
         [](const VkPhysicalDeviceProperties& lhs, const VkPhysicalDeviceProperties& rhs) {
             return IsMicrosoftDozen(rhs.deviceName) && !IsMicrosoftDozen(lhs.deviceName);
         });
+    // Demote software rasterizers (llvmpipe/lavapipe, SwiftShader) below every real GPU.
+    // The name sort above can put "llvmpipe" ahead of an integrated GPU such as
+    // "Adreno (TM) 830", so device 0 (the default) becomes the CPU renderer whenever
+    // a software ICD is visible.
+    SortPhysicalDevices(
+        devices, dld,
+        [](const VkPhysicalDeviceProperties& lhs, const VkPhysicalDeviceProperties& rhs) {
+            return lhs.deviceType != VK_PHYSICAL_DEVICE_TYPE_CPU &&
+                   rhs.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU;
+        });
 }
 
 template <typename T>
