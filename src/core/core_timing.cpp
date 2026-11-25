@@ -295,8 +295,8 @@ struct CoreTiming::Event {
     u64 fifo_order;
     std::weak_ptr<EventType> type;
     s64 reschedule_time;
-    heap_t::handle_type handle{};
     bool precise{};
+    heap_t::handle_type handle{};
 
     // Sort by time, unless the times are the same, in which case sort by
     // the order added to the queue
@@ -482,7 +482,7 @@ void CoreTiming::ScheduleEvent(std::chrono::nanoseconds ns_into_future,
         const auto next_time{absolute_time ? ns_into_future : GetGlobalTimeNs() + ns_into_future};
 
         const bool precise = event_type && event_type->precise;
-        auto h{event_queue.emplace(Event{next_time.count(), event_fifo_id++, event_type, 0, {}, precise})};
+        auto h{event_queue.emplace(Event{next_time.count(), event_fifo_id++, event_type, 0, precise})};
         (*h).handle = h;
     }
 
@@ -499,7 +499,7 @@ void CoreTiming::ScheduleLoopingEvent(std::chrono::nanoseconds start_time,
 
         const bool precise = event_type && event_type->precise;
         auto h{event_queue.emplace(
-            Event{next_time.count(), event_fifo_id++, event_type, resched_time.count(), {}, precise})};
+            Event{next_time.count(), event_fifo_id++, event_type, resched_time.count(), precise})};
         (*h).handle = h;
     }
 
@@ -632,8 +632,8 @@ std::optional<s64> CoreTiming::Advance() {
                 }
 
                 event_queue.update(evt.handle, Event{next_time, event_fifo_id++, evt.type,
-                                                     next_schedule_time, evt.handle,
-                                                     event_type->precise});
+                                                     next_schedule_time, event_type->precise,
+                                                     evt.handle});
             }
         } else {
             event_queue.pop();
