@@ -1468,7 +1468,7 @@ void TextureCache<P>::BudgetControl() {
             runtime.SetBudgetPressure(budget_pressure);
         }
         ApplyBudgetCap();
-        if (budget > 2_GiB && budget < 5_GiB) {
+        if (budget > 2_GiB && budget < 5_GiB && usage <= budget) {
             u64 live_image_bytes{};
             for (const auto [image_id, image] : slot_images) {
                 if (False(image->flags & ImageFlagBits::Unbacked)) {
@@ -1518,7 +1518,8 @@ void TextureCache<P>::EnforceCriticalAtCreate(u64 incoming) {
     // every caller of InsertImage looks up again or gives up the operation).
     const int enforce = VideoCore::Nx2Debug::SwitchValue(
         VideoCore::Nx2Debug::g_tc_critical_enforce, "FRITCHII_TC_CRITICAL_ENFORCE", 1);
-    if (enforce <= 0 || (enforce == 1 && !budget_pressure) ||
+    const bool small_card = Common::HostHasSmallVideoMemory();
+    if (enforce <= 0 || (enforce == 1 && !budget_pressure && !small_card) ||
         total_used_memory + incoming <= critical_memory) [[likely]] {
         return;
     }
@@ -1527,7 +1528,8 @@ void TextureCache<P>::EnforceCriticalAtCreate(u64 incoming) {
         return value != nullptr ? std::strtoull(value, nullptr, 10) : 0ULL;
     }();
     const u64 idle_frames = (std::max)({u64{10}, min_age, thrash_floor});
-    constexpr u32 MaxPerFrame = 256;
+    const u32 max_per_frame =
+        (small_card && total_used_memory > critical_memory + 512_MiB) ? 1024U : 256U;
     constexpr size_t MaxPerPass = 32;
     constexpr size_t MaxLooked = 512;
     if (create_enforce_frame != frame_tick) {
@@ -1535,7 +1537,7 @@ void TextureCache<P>::EnforceCriticalAtCreate(u64 incoming) {
         create_enforce_frame_deletes = 0;
     }
     auto& stats = create_enforce_stats;
-    if (create_enforce_frame_deletes >= MaxPerFrame) {
+    if (create_enforce_frame_deletes >= max_per_frame) {
         ++stats.capped;
         return;
     }
@@ -1565,7 +1567,9 @@ void TextureCache<P>::EnforceCriticalAtCreate(u64 incoming) {
     bound[NUM_RT] = bound_image(render_targets.depth_buffer_id);
     auto& candidates = create_enforce_candidates;
     candidates.clear();
-    const u64 min_idle = (std::max)(u64{10}, min_age);
+    const u64 emergency_age =
+        (small_card && total_used_memory > critical_memory + 512_MiB) ? u64{4} : u64{10};
+    const u64 min_idle = (std::max)(emergency_age, min_age);
     size_t looked = 0;
     const auto collect_candidates = [&](u64 floor_frames) {
         candidates.clear();
@@ -1598,7 +1602,7 @@ void TextureCache<P>::EnforceCriticalAtCreate(u64 incoming) {
     const DeleteReasonScope delete_reason_scope{*this, DeleteReason::GarbageCollect};
     for (const ImageId image_id : candidates) {
         if (total_used_memory + incoming <= critical_memory ||
-            create_enforce_frame_deletes >= MaxPerFrame) {
+            create_enforce_frame_deletes >= max_per_frame) {
             break;
         }
         auto& image = slot_images[image_id];

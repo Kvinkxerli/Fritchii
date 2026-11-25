@@ -447,12 +447,12 @@ std::atomic<int> g_astc_auto_trim{-1}; ///< -1: not chosen yet
     return static_cast<u32>(level);
 }
 
-[[nodiscard]] u32 AstcTrimMinSize() {
-    static const u32 size = [] {
-        const char* value = std::getenv("EDEN_NX2_ASTC_TRIM_MIN");
-        return value != nullptr ? static_cast<u32>(std::clamp(std::atoi(value), 64, 16384)) : 1024U;
-    }();
-    return size;
+[[nodiscard]] u32 AstcTrimMinSize(const Device& device) {
+    static const char* env_value = std::getenv("EDEN_NX2_ASTC_TRIM_MIN");
+    if (env_value != nullptr) {
+        return static_cast<u32>(std::clamp(std::atoi(env_value), 64, 16384));
+    }
+    return device.GetDeviceLocalMemory() < (u64{5} << 30) ? 512U : 1024U;
 }
 
 [[nodiscard]] ImageInfo TrimmedHostInfo(const Device& device, const ImageInfo& info, u32& level_offset) {
@@ -460,7 +460,7 @@ std::atomic<int> g_astc_auto_trim{-1}; ///< -1: not chosen yet
     if (WillUseGpuBcnTranscode(device, info)) {
         const u32 trim = AstcTrimLevels(device);
         if (trim == 0 || info.resources.levels <= 1 ||
-            (std::max)(info.size.width, info.size.height) < AstcTrimMinSize()) {
+            (std::max)(info.size.width, info.size.height) < AstcTrimMinSize(device)) {
             return info;
         }
         level_offset = (std::min)(trim, static_cast<u32>(info.resources.levels) - 1);
