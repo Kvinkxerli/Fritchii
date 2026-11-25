@@ -1599,6 +1599,12 @@ void TextureCache<P>::EnforceCriticalAtCreate(u64 incoming) {
     if (candidates.empty() && looked < MaxLooked) {
         create_enforce_empty_frame = frame_tick;
     }
+    if (!candidates.empty()) {
+        // Evict cheap-to-reload images before costly (e.g. ASTC) ones to avoid re-decode hitches.
+        std::ranges::stable_partition(candidates, [&](ImageId id) {
+            return False(slot_images[id].flags & ImageFlagBits::CostlyLoad);
+        });
+    }
     const DeleteReasonScope delete_reason_scope{*this, DeleteReason::GarbageCollect};
     for (const ImageId image_id : candidates) {
         if (total_used_memory + incoming <= critical_memory ||
@@ -1739,6 +1745,8 @@ void TextureCache<P>::TickThrashGuard() {
             floor -= floor / 8 + 1;
         }
         if (floor != 0) {
+            const bool new_short = create_enforce_stats.short_of > last_thrash_short_of;
+            last_thrash_short_of = create_enforce_stats.short_of;
             u64 bytes = 0;
             for (const auto [image_id, image] : slot_images) {
                 if (False(image->flags & ImageFlagBits::Unbacked)) {
@@ -1754,7 +1762,7 @@ void TextureCache<P>::TickThrashGuard() {
                     ++thrash_stats.capped;
                 } else if (budget != 0 &&
                            (bytes > cap_threshold ||
-                            (pressure && create_enforce_stats.short_of != 0 && floor > 60))) {
+                            (pressure && new_short && floor > 60))) {
                     floor /= 2;
                     ++thrash_stats.capped;
                 }
@@ -1847,6 +1855,7 @@ void TextureCache<P>::LogVramOwners() {
         seen.over_seconds = 0;
         seen.spill_seconds = 0;
         enforce = {};
+        last_thrash_short_of = 0;
     }
 }
 

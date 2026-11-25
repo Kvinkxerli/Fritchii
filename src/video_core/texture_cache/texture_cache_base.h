@@ -209,6 +209,7 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
         u64 capped{};  ///< passes refused by the per-frame cap
         u64 short_of{}; ///< passes that ended still over critical
     } create_enforce_stats;
+    u64 last_thrash_short_of{};
     u64 create_enforce_frame{~0ULL};
     u32 create_enforce_frame_deletes{};
     /// FRITCHII_TC_THRASH_GUARD: the frame a pass walked every idle image and found none to
