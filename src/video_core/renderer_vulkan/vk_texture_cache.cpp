@@ -5708,9 +5708,7 @@ f32 TextureCacheRuntime::OcarinaFsrLodBias() {
                     ? Settings::OcarinaRenderHeightFor(Settings::AppliedOcarinaRenderHeight())
                     : 1080;
             const auto& resolution = Settings::values.resolution_info;
-            if ((VideoCommon::OcarinaScaledUpscale() ||
-                 (resolution.active && resolution.up_factor < 1.0f)) &&
-                resolution.active) {
+            if (VideoCommon::OcarinaScaledUpscale() && resolution.active) {
                 render_height = static_cast<u32>(
                     static_cast<f32>(render_height) * resolution.up_factor + 0.5f);
             }

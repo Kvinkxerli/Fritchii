@@ -102,6 +102,23 @@ bool MaxResolutionFits() {
         return true;
     }
     const bool small = Common::HostHasSmallVideoMemory();
+    if (small) {
+        const u32 chosen_height = Settings::values.oot_render_height.GetValue();
+        const auto res_setup = Settings::values.resolution_setup.GetValue();
+        const bool sub_1x_wanted = res_setup == Settings::ResolutionSetup::Res1_2X ||
+                                   res_setup == Settings::ResolutionSetup::Res3_4X;
+        const bool reduced_scale_wanted =
+            (chosen_height != 0 && chosen_height < 1440) ||
+            (Settings::values.nvidia_dlss.GetValue() &&
+             (sub_1x_wanted ||
+              Settings::values.nvidia_dlss_quality.GetValue() ==
+                  Settings::NvidiaDlssQuality::Performance ||
+              Settings::values.nvidia_dlss_quality.GetValue() ==
+                  Settings::NvidiaDlssQuality::UltraPerformance));
+        if (reduced_scale_wanted) {
+            return true;
+        }
+    }
     static bool logged{};
     if (small && !std::exchange(logged, true)) {
         LOG_INFO(Loader, "Max Resolution (built-in) left out: {} MiB of video memory, the game "

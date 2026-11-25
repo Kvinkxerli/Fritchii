@@ -172,6 +172,13 @@ std::optional<u32> OcarinaRenderHeight() {
     // Not chosen yet: FRITCHII_DLSS_RENDER_SCALE's DLSS qualities, as before. Balanced (0.871)
     // pads its 2276x1280 scene into 2288x1280 targets, which the upscaler does not take yet: it
     // keeps 2560x1440.
+    // If player selected 0.5x / 0.75x in Graphics with DLSS/FSR, map it to OoT's clean
+    // fixed-scale render patch (720p / 1080p) so color/depth/compute stay 1x in lockstep.
+    if (const auto setup = values.resolution_setup.GetValue(); setup == ResolutionSetup::Res1_2X) {
+        return 720;
+    } else if (setup == ResolutionSetup::Res3_4X) {
+        return 1080;
+    }
     const auto quality = values.nvidia_dlss_quality.GetValue();
     if (!OcarinaDlssRenderScaleSwitch() || fsr) {
         return std::nullopt;

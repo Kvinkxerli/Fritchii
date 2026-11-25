@@ -810,6 +810,10 @@ size_t GetTotalPipelineWorkers(const Device& device) {
     }
     return std::min(max_core_threads, desired);
 #else
+    if (Common::GetMemInfo().TotalPhysicalMemory > 0 &&
+        Common::GetMemInfo().TotalPhysicalMemory <= (u64{17} << 30)) {
+        return (std::min)(max_core_threads, size_t{4});
+    }
     return max_core_threads;
 #endif
 }

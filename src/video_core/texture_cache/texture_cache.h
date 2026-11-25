@@ -1354,12 +1354,14 @@ void TextureCache<P>::ApplyBudgetCap() {
         return;
     }
     // The cap keeps the base thresholds' distance (1.5 GiB with Fritchii's ceiling) between
-    // expected and critical, at least 256 MiB and at most half the cap.
-    const u64 gap = base_critical_memory - (std::min)(base_critical_memory, base_expected_memory);
+    // expected and critical, at least 256 MiB and at most half the cap (or 192 MiB on small cards).
+    const u64 raw_gap = base_critical_memory - (std::min)(base_critical_memory, base_expected_memory);
+    const u64 max_gap = budget_cap < 3_GiB ? u64{192_MiB} : (budget_cap / 2);
+    const u64 min_gap = budget_cap < 3_GiB ? u64{128_MiB} : u64{256_MiB};
     critical_memory = budget_cap;
     expected_memory = (std::min)(
         expected_memory,
-        critical_memory - (std::min)(critical_memory / 2, (std::max)(gap, u64{256_MiB})));
+        critical_memory - (std::min)(max_gap, (std::max)(raw_gap, min_gap)));
     minimum_memory =
         (std::min)(minimum_memory, expected_memory - (std::min)(expected_memory, u64{1_GiB}));
 }
@@ -1466,6 +1468,22 @@ void TextureCache<P>::BudgetControl() {
             runtime.SetBudgetPressure(budget_pressure);
         }
         ApplyBudgetCap();
+        if (budget > 2_GiB && budget < 5_GiB) {
+            u64 live_image_bytes{};
+            for (const auto [image_id, image] : slot_images) {
+                if (False(image->flags & ImageFlagBits::Unbacked)) {
+                    live_image_bytes += ImageMemoryBytes(*image);
+                }
+            }
+            const u64 other = total_used_memory - (std::min)(total_used_memory, live_image_bytes);
+            const u64 small_img_floor = (std::min)(budget / 4, u64{768_MiB});
+            const u64 cap_expected = (std::min)(other + small_img_floor,
+                                                base_expected_memory);
+            if (expected_memory < cap_expected) {
+                expected_memory = cap_expected;
+                critical_memory = (std::max)(critical_memory, expected_memory + 192_MiB);
+            }
+        }
         const u64 change = budget_cap > old_cap ? budget_cap - old_cap : old_cap - budget_cap;
         if (budget_pressure != was_pressure ||
             (budget_cap != ~0ULL && old_cap != ~0ULL && change >= 256_MiB) ||
@@ -1727,9 +1745,12 @@ void TextureCache<P>::TickThrashGuard() {
             if constexpr (requires { runtime.GetDeviceMemoryBudget(); }) {
                 const u64 budget = runtime.GetDeviceMemoryBudget();
                 const u64 cap_threshold = budget < 5_GiB ? budget / 2 : budget / 4 * 3;
-                if (budget != 0 &&
-                    (bytes > cap_threshold ||
-                     (pressure && create_enforce_stats.short_of != 0 && floor > 60))) {
+                if (budget != 0 && budget < 5_GiB && floor > 120) {
+                    floor = 120;
+                    ++thrash_stats.capped;
+                } else if (budget != 0 &&
+                           (bytes > cap_threshold ||
+                            (pressure && create_enforce_stats.short_of != 0 && floor > 60))) {
                     floor /= 2;
                     ++thrash_stats.capped;
                 }
