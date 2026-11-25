@@ -15,10 +15,10 @@
 
 #include "common/scm_rev.h"
 
-#include <QApplication>
-#include <QMessageBox>
 #include <cstdlib>
 #include <exception>
+#include <QApplication>
+#include <QMessageBox>
 
 #include "common/fs/fs_paths.h"
 #include "common/fs/path_util.h"
@@ -44,9 +44,9 @@
 #include <cstring>
 #endif
 
-#include "main_window.h"
 #include "fritchii/fritchii_ui.h"
 #include "fritchii/switches_window.h"
+#include "main_window.h"
 #include "util/profiling_mode.h"
 #ifdef ENABLE_UPDATE_CHECKER
 #include "updater/update_dialog.h"
@@ -173,12 +173,14 @@ static std::string RetireHybridCoresOff(const std::filesystem::path& path) {
             line.pop_back();
         }
         std::string bare = line;
-        bare.erase(std::remove_if(bare.begin(), bare.end(),
-                                  [](char c) { return c == ' ' || c == '\t'; }),
-                   bare.end());
+        bare.erase(
+            std::remove_if(bare.begin(), bare.end(), [](char c) { return c == ' ' || c == '\t'; }),
+            bare.end());
         if (bare == "EDEN_HYBRID_CORES=0") {
-            out += "# " + line + "   (turned off by Fritchii 6.2: no longer needed. Remove the # "
-                   "to use it again.)" + newline;
+            out += "# " + line +
+                   "   (turned off by Fritchii 6.2: no longer needed. Remove the # "
+                   "to use it again.)" +
+                   newline;
             retired = true;
         } else {
             out += line;
@@ -254,13 +256,18 @@ static std::filesystem::path GetSwitchExeDirectory(const char* argv0) {
 // the triangles still showed without it alone (2026-11-09).
 constexpr std::pair<const char*, const char*> BuiltinSwitches[] = {
     {"EDEN_NX2_GRAPHICS_SSBO_BARE", "0"},
-    {"EDEN_NX2_ACQUIRE_PRECHECK", "2"},   {"EDEN_NX2_MACRO_SINK", "1"},
-    {"EDEN_NX2_COMPUTE_SINK", "1"},       {"EDEN_NX2_RING_PAIRS", "1"},
-    {"EDEN_NX2_UBO_INPLACE", "1"},        {"EDEN_NX2_PIPELINE_CLEAN", "1"},
-    {"EDEN_NX2_LIST_WAIT_SKIP", "1"},     {"EDEN_NX2_PREFLUSH", "1"},
+    {"EDEN_NX2_ACQUIRE_PRECHECK", "2"},
+    {"EDEN_NX2_MACRO_SINK", "1"},
+    {"EDEN_NX2_COMPUTE_SINK", "1"},
+    {"EDEN_NX2_RING_PAIRS", "1"},
+    {"EDEN_NX2_UBO_INPLACE", "1"},
+    {"EDEN_NX2_PIPELINE_CLEAN", "1"},
+    {"EDEN_NX2_LIST_WAIT_SKIP", "1"},
+    {"EDEN_NX2_PREFLUSH", "1"},
     {"EDEN_NX2_SEM_FAST", "2"},
-    // No 40 MB/s pacing of game file reads (the original code's fix for video freezes in other games):
-    // OoT's videos play fine without it and it slept the game at loads and kills (2026-11-10).
+    // No 40 MB/s pacing of game file reads (the original code's fix for video freezes in other
+    // games): OoT's videos play fine without it and it slept the game at loads and kills
+    // (2026-11-10).
     {"EDEN_NX2_READ_THROTTLE", "0"},
     // The texture cache collects from 7.5 GiB at most (a ceiling: smaller cards keep their own
     // thresholds). Owner's call for v5.7 after the 2026-11-10 playtests (VRAM 10 -> ~6 GB, more
@@ -278,10 +285,14 @@ constexpr std::pair<const char*, const char*> BuiltinSwitches[] = {
     // verify mode, toggled together at the market in one session: 62.7 -> 64.1 fps, 1% low 44.4 ->
     // 45.5, 0.1% low 37.7 -> 40.4, the back 7.27 -> 6.99 us a draw (V6_PLAN.md, V6_GOALS.md).
     // Each stays live: =0 in nx2_switches.txt turns it off.
-    {"FRITCHII_GATHER_ONE_LOCK", "1"},    {"FRITCHII_GATHER_EMPTY_TEST", "1"},
-    {"FRITCHII_FENCE_COMMIT_FAST", "1"},  {"FRITCHII_FRONT_RAN_READS", "1"},
-    {"FRITCHII_VERTEX_INPUT_COMPACT", "1"}, {"FRITCHII_BIND_ADDR_MEMO", "1"},
-    {"FRITCHII_WORKER_SPIN", "4"},        {"FRITCHII_CB_WORDS_BLOCK", "1"},
+    {"FRITCHII_GATHER_ONE_LOCK", "1"},
+    {"FRITCHII_GATHER_EMPTY_TEST", "1"},
+    {"FRITCHII_FENCE_COMMIT_FAST", "1"},
+    {"FRITCHII_FRONT_RAN_READS", "1"},
+    {"FRITCHII_VERTEX_INPUT_COMPACT", "1"},
+    {"FRITCHII_BIND_ADDR_MEMO", "1"},
+    {"FRITCHII_WORKER_SPIN", "4"},
+    {"FRITCHII_CB_WORDS_BLOCK", "1"},
     // 2026-11-14: uniform bank pages nobody flagged as written are not compared again. Market
     // toggle 61.3 -> 62.5 fps, 1% low 43.5 -> 45.5, 0.1% low 32.8 -> 37.4; FLAGGED=2 verify: never
     // flagged, recheck and CPU-modified 0 in all 29 windows (the other counts are timed races).
@@ -290,46 +301,78 @@ constexpr std::pair<const char*, const char*> BuiltinSwitches[] = {
     // every v6 test, PGO training and tester build 1-9 ran with, so a player with no
     // nx2_switches.txt gets exactly the tested build. Values as tested; each stays live or
     // overridable in nx2_switches.txt (=0 turns one off). Linux gets the set its test builds ran.
-    {"EDEN_NX2_SPLIT", "2"},              {"EDEN_NX2_FENCE_BATCH", "1"},
-    {"FRITCHII_DEPTH_POOL_FIT", "3"},     {"FRITCHII_HOSTTIMING_SPIN_BUDGET", "5"},
-    {"FRITCHII_HOSTTIMING_OFF_GPU", "1"}, {"FRITCHII_DLSS_LOW_VRAM_CNN", "1"},
+    {"EDEN_NX2_SPLIT", "2"},
+    {"EDEN_NX2_FENCE_BATCH", "1"},
+    {"FRITCHII_DEPTH_POOL_FIT", "3"},
+    {"FRITCHII_HOSTTIMING_SPIN_BUDGET", "5"},
+    {"FRITCHII_HOSTTIMING_PRIORITY", "1"},
+    {"FRITCHII_HOSTTIMING_OFF_GPU", "1"},
+    {"FRITCHII_DLSS_LOW_VRAM_CNN", "1"},
     // Recompiler
-    {"FRITCHII_JIT_INDIRECT_CACHE", "2"}, {"FRITCHII_JIT_RSQRT_ZERO", "2"},
-    {"FRITCHII_JIT_NO_FRAME_POINTER", "1"}, {"FRITCHII_JIT_FLAG_BRANCH", "2"},
-    {"FRITCHII_JIT_FAR_CODE", "1"},       {"FRITCHII_JIT_CHAIN", "6"},
-    {"FRITCHII_JIT_BLOCK_LIST", "1"},     {"FRITCHII_JIT_INLINE_CNTPCT", "1"},
-    {"FRITCHII_JIT_STATE_REFS", "1"},     {"FRITCHII_JIT_SHARED", "1"},
+    {"FRITCHII_JIT_INDIRECT_CACHE", "2"},
+    {"FRITCHII_JIT_RSQRT_ZERO", "2"},
+    {"FRITCHII_JIT_NO_FRAME_POINTER", "1"},
+    {"FRITCHII_JIT_FLAG_BRANCH", "2"},
+    {"FRITCHII_JIT_FAR_CODE", "1"},
+    {"FRITCHII_JIT_CHAIN", "6"},
+    {"FRITCHII_JIT_BLOCK_LIST", "1"},
+    {"FRITCHII_JIT_INLINE_CNTPCT", "1"},
+    {"FRITCHII_JIT_STATE_REFS", "1"},
+    {"FRITCHII_JIT_SHARED", "1"},
     {"FRITCHII_STORE_MEMO", "2"},
     // GPU front and back
-    {"EDEN_NX2_EXP37", "1"},              {"EDEN_NX2_EXP103", "64"},
-    {"EDEN_NX2_EXP123", "3"},             {"EDEN_NX2_LIGHT_TABLE_ARRAYS", "1"},
-    {"FRITCHII_MEMSTAGE_TICKS", "1"},     {"FRITCHII_STAMP_READ_PAGES", "2"},
-    {"FRITCHII_LIST_COPY_SKIP", "1"},     {"FRITCHII_DISPATCH_WALK_SUMMARY", "1"},
-    {"FRITCHII_FRONT_CALL_LEAN", "1"},    {"FRITCHII_FRONT_LIST_LANE", "3"},
-    {"FRITCHII_NOTED_FAST", "1"},         {"FRITCHII_FRONT_TRIM_RANGE", "1"},
-    {"FRITCHII_FRONT_TRIM_QMD", "1"},     {"FRITCHII_FRONT_ASYNC_TABLE", "1"},
-    {"FRITCHII_DEPTH_POOL_BIG", "1"},     {"FRITCHII_RAM_GPU_ENTRIES", "1"},
-    {"FRITCHII_SMALL_CARD", "2"},         {"FRITCHII_READ_SIDE_COPY", "3"},
-    {"FRITCHII_GPU_SIBLINGS_FREE", "1"},  {"FRITCHII_PACE_FIX", "3"},
+    {"EDEN_NX2_EXP37", "1"},
+    {"EDEN_NX2_EXP103", "64"},
+    {"EDEN_NX2_EXP123", "3"},
+    {"EDEN_NX2_LIGHT_TABLE_ARRAYS", "1"},
+    {"FRITCHII_MEMSTAGE_TICKS", "1"},
+    {"FRITCHII_STAMP_READ_PAGES", "2"},
+    {"FRITCHII_LIST_COPY_SKIP", "1"},
+    {"FRITCHII_DISPATCH_WALK_SUMMARY", "1"},
+    {"FRITCHII_FRONT_CALL_LEAN", "1"},
+    {"FRITCHII_FRONT_LIST_LANE", "3"},
+    {"FRITCHII_NOTED_FAST", "1"},
+    {"FRITCHII_FRONT_TRIM_RANGE", "1"},
+    {"FRITCHII_FRONT_TRIM_QMD", "1"},
+    {"FRITCHII_FRONT_ASYNC_TABLE", "1"},
+    {"FRITCHII_DEPTH_POOL_BIG", "1"},
+    {"FRITCHII_RAM_GPU_ENTRIES", "1"},
+    {"FRITCHII_SMALL_CARD", "2"},
+    {"FRITCHII_READ_SIDE_COPY", "3"},
+    {"FRITCHII_GPU_SIBLINGS_FREE", "1"},
+    {"FRITCHII_PACE_FIX", "3"},
     // OoT's zstd decodes (area loads, streamed files) on the host's libzstd; verify mode compared
     // 995 stream chunks with 0 mismatches (2026-11-19). 0 turns it off.
     {"FRITCHII_HOST_ZSTD", "3"},
     // FRITCHII_OCCL_FLAG is not here: the graphics setting "OoT occlusion speed-up" gives its
     // value when no switch sets it (Standard, the default, is the core: 3).
     // One follower (E/R GPU threads)
-    {"FRITCHII_ONEF_LEAN", "1"},          {"FRITCHII_ONEF_AHEAD", "0"},
-    {"FRITCHII_ONEF_POSTED", "1"},        {"FRITCHII_ONEF_COPY_E", "1"},
-    {"FRITCHII_ONEF_UNLEND", "55"},       {"FRITCHII_ONEF_GATHER_E", "1"},
-    {"FRITCHII_ONEF_OP_CLEAR", "1"},      {"FRITCHII_ONEF_OP_INVAL", "1"},
-    {"FRITCHII_ONEF_POST_FENCE", "1"},    {"FRITCHII_ONEF_FLUSH_E", "1"},
-    {"FRITCHII_ONEF_OP_DMA", "1"},        {"FRITCHII_ONEF_OP_LISTKEEP", "1"},
-    {"FRITCHII_ONEF_SEM_E", "1"},         {"FRITCHII_ONEF_UNLENT_RESET", "1"},
-    {"FRITCHII_ONEF_UNLENT_VALUES", "1"}, {"FRITCHII_ONEF_BIND_SEED", "1"},
-    {"FRITCHII_ONEF_OP_DISPATCH", "7"},   {"FRITCHII_ONEF_UNION_FILTER", "1"},
-    {"FRITCHII_ONEF_SOFT_RELEASE_E", "1"}, {"FRITCHII_ONEF_POST_FENCE_REPORT", "1"},
-    {"FRITCHII_ONEF_CARRY_OPS", "1"},     {"FRITCHII_ONEF_KEY_KEEP", "2"},
-    {"FRITCHII_ONEF_CB_LEAN", "3"},       {"FRITCHII_ONEF_DISPATCH_RANGES", "1"},
-    {"FRITCHII_ONEF_POST_IDLE", "2"},     {"FRITCHII_ONEF_RAISE_AFTER_LEND", "1"},
+    {"FRITCHII_ONEF_LEAN", "1"},
+    {"FRITCHII_ONEF_AHEAD", "0"},
+    {"FRITCHII_ONEF_POSTED", "1"},
+    {"FRITCHII_ONEF_COPY_E", "1"},
+    {"FRITCHII_ONEF_UNLEND", "55"},
+    {"FRITCHII_ONEF_GATHER_E", "1"},
+    {"FRITCHII_ONEF_OP_CLEAR", "1"},
+    {"FRITCHII_ONEF_OP_INVAL", "1"},
+    {"FRITCHII_ONEF_POST_FENCE", "1"},
+    {"FRITCHII_ONEF_FLUSH_E", "1"},
+    {"FRITCHII_ONEF_OP_DMA", "1"},
+    {"FRITCHII_ONEF_OP_LISTKEEP", "1"},
+    {"FRITCHII_ONEF_SEM_E", "1"},
+    {"FRITCHII_ONEF_UNLENT_RESET", "1"},
+    {"FRITCHII_ONEF_UNLENT_VALUES", "1"},
+    {"FRITCHII_ONEF_BIND_SEED", "1"},
+    {"FRITCHII_ONEF_OP_DISPATCH", "7"},
+    {"FRITCHII_ONEF_UNION_FILTER", "1"},
+    {"FRITCHII_ONEF_SOFT_RELEASE_E", "1"},
+    {"FRITCHII_ONEF_POST_FENCE_REPORT", "1"},
+    {"FRITCHII_ONEF_CARRY_OPS", "1"},
+    {"FRITCHII_ONEF_KEY_KEEP", "2"},
+    {"FRITCHII_ONEF_CB_LEAN", "3"},
+    {"FRITCHII_ONEF_DISPATCH_RANGES", "1"},
+    {"FRITCHII_ONEF_POST_IDLE", "2"},
+    {"FRITCHII_ONEF_RAISE_AFTER_LEND", "1"},
     // zortos293/Lichii #2104 (owner 2026-11-18: keep zortos's proven stutter fixes even where
     // our tests show no difference): a native dispatch whose compute pipeline isn't built yet is
     // skipped for that frame when its guards prove nothing reads the output. Works only while a
@@ -341,13 +384,19 @@ constexpr std::pair<const char*, const char*> BuiltinSwitches[] = {
     // peak VRAM 12.45 -> 9.1 GB. It was only in the play build, so v6.0 shipped without it.
     {"FRITCHII_COVERED_RETIRE", "4"},
     {"FRITCHII_COLLECT_LAND_UNDER", "1"},
-    {"FRITCHII_TC_COLLECT_EVICTABLE", "1"}, {"FRITCHII_TC_COLLECT_OVER", "1"},
+    {"FRITCHII_TC_COLLECT_EVICTABLE", "1"},
+    {"FRITCHII_TC_COLLECT_OVER", "1"},
     {"FRITCHII_SWEEP_SUPERSEDED", "3"},
-    {"FRITCHII_OCCL_LEAN", "1"},          {"FRITCHII_BIND_SKIP", "2"},
-    {"FRITCHII_STEP_LEAN", "1"},          {"FRITCHII_REFRESH_LEAN", "1"},
-    {"FRITCHII_NOTED_OVERFLOW", "1"},     {"FRITCHII_ONEF_UBO_KEEP", "2"},
-    {"FRITCHII_BANK_FAST", "1"},          {"FRITCHII_FILL_GEOM_KEEP", "1"},
-    {"FRITCHII_FILL_UPDATE_KEEP", "1"},   {"FRITCHII_HANDLE_PROG_KEEP", "1"},
+    {"FRITCHII_OCCL_LEAN", "1"},
+    {"FRITCHII_BIND_SKIP", "2"},
+    {"FRITCHII_STEP_LEAN", "1"},
+    {"FRITCHII_REFRESH_LEAN", "1"},
+    {"FRITCHII_NOTED_OVERFLOW", "1"},
+    {"FRITCHII_ONEF_UBO_KEEP", "2"},
+    {"FRITCHII_BANK_FAST", "1"},
+    {"FRITCHII_FILL_GEOM_KEEP", "1"},
+    {"FRITCHII_FILL_UPDATE_KEEP", "1"},
+    {"FRITCHII_HANDLE_PROG_KEEP", "1"},
     {"FRITCHII_FILL_BRACKET_LEAN", "1"},  {"FRITCHII_ONEF_MESH_EMU_ASYNC", "1"},
     {"FRITCHII_ESPLIT", "1"},             {"FRITCHII_ESPLIT_FLUSH_ASYNC", "1"},
     {"FRITCHII_ESPLIT_BIND_BATCH", "1"},
