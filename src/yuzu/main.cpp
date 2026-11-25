@@ -341,6 +341,10 @@ constexpr std::pair<const char*, const char*> BuiltinSwitches[] = {
     // peak VRAM 12.45 -> 9.1 GB. It was only in the play build, so v6.0 shipped without it.
     {"FRITCHII_COVERED_RETIRE", "4"},
     {"FRITCHII_COLLECT_LAND_UNDER", "1"},
+    {"FRITCHII_TC_COLLECT_EVICTABLE", "1"}, {"FRITCHII_TC_COLLECT_OVER", "1"},
+    {"FRITCHII_SWEEP_SUPERSEDED", "3"},
+    {"FRITCHII_OCCL_LEAN", "1"},          {"FRITCHII_BIND_SKIP", "2"},
+    {"FRITCHII_STEP_LEAN", "1"},          {"FRITCHII_REFRESH_LEAN", "1"},
 #ifdef _WIN32
     // Tested on Windows only (the Linux test builds ran without them).
     {"FRITCHII_JIT_PIN", "1"},            {"FRITCHII_JIT_PIN_REGS", "x8,x0"},
