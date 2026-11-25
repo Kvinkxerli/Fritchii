@@ -281,7 +281,7 @@ constexpr std::pair<const char*, const char*> BuiltinSwitches[] = {
     {"FRITCHII_GATHER_ONE_LOCK", "1"},    {"FRITCHII_GATHER_EMPTY_TEST", "1"},
     {"FRITCHII_FENCE_COMMIT_FAST", "1"},  {"FRITCHII_FRONT_RAN_READS", "1"},
     {"FRITCHII_VERTEX_INPUT_COMPACT", "1"}, {"FRITCHII_BIND_ADDR_MEMO", "1"},
-    {"FRITCHII_WORKER_SPIN", "20"},       {"FRITCHII_CB_WORDS_BLOCK", "1"},
+    {"FRITCHII_WORKER_SPIN", "4"},        {"FRITCHII_CB_WORDS_BLOCK", "1"},
     // 2026-11-14: uniform bank pages nobody flagged as written are not compared again. Market
     // toggle 61.3 -> 62.5 fps, 1% low 43.5 -> 45.5, 0.1% low 32.8 -> 37.4; FLAGGED=2 verify: never
     // flagged, recheck and CPU-modified 0 in all 29 windows (the other counts are timed races).
@@ -291,7 +291,7 @@ constexpr std::pair<const char*, const char*> BuiltinSwitches[] = {
     // nx2_switches.txt gets exactly the tested build. Values as tested; each stays live or
     // overridable in nx2_switches.txt (=0 turns one off). Linux gets the set its test builds ran.
     {"EDEN_NX2_SPLIT", "2"},              {"EDEN_NX2_FENCE_BATCH", "1"},
-    {"FRITCHII_DEPTH_POOL_FIT", "3"},     {"FRITCHII_HOSTTIMING_SPIN_BUDGET", "20"},
+    {"FRITCHII_DEPTH_POOL_FIT", "3"},     {"FRITCHII_HOSTTIMING_SPIN_BUDGET", "5"},
     {"FRITCHII_HOSTTIMING_OFF_GPU", "1"}, {"FRITCHII_DLSS_LOW_VRAM_CNN", "1"},
     // Recompiler
     {"FRITCHII_JIT_INDIRECT_CACHE", "2"}, {"FRITCHII_JIT_RSQRT_ZERO", "2"},
@@ -345,9 +345,9 @@ constexpr std::pair<const char*, const char*> BuiltinSwitches[] = {
     // Tested on Windows only (the Linux test builds ran without them).
     {"FRITCHII_JIT_PIN", "1"},            {"FRITCHII_JIT_PIN_REGS", "x8,x0"},
     {"FRITCHII_ONEF_PIN", "2"},           {"FRITCHII_GPU_PRIORITY", "2"},
-    {"FRITCHII_ZERO_TRIM_BATCH", "1"},    {"FRITCHII_ZERO_TRIM_CHUNK", "1"},
-    {"FRITCHII_ZERO_UPLOAD", "1"},        {"FRITCHII_REPORT_WAIT", "1"},
-    {"FRITCHII_FENCE_COPY_UNLOCKED", "1"},
+    {"FRITCHII_THREAD_QOS", "1"},         {"FRITCHII_ZERO_TRIM_BATCH", "1"},
+    {"FRITCHII_ZERO_TRIM_CHUNK", "1"},    {"FRITCHII_ZERO_UPLOAD", "0"},
+    {"FRITCHII_REPORT_WAIT", "1"},        {"FRITCHII_FENCE_COPY_UNLOCKED", "1"},
 #endif
 };
 

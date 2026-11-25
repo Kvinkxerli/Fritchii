@@ -34,6 +34,7 @@
 #include "common/assert.h"
 #include "common/nx2_hitch.h"
 #include "common/common_types.h"
+#include "common/host_video_memory.h"
 #include "common/literals.h"
 #include "common/logging.h"
 #include "common/memory_detect.h"
@@ -426,7 +427,9 @@ static VmaPool DepthPoolOfType(VmaAllocator allocator, u32 type, bool is_small) 
     const VmaPoolCreateInfo pool_ci{
         .memoryTypeIndex = type,
         .flags = 0,
-        .blockSize = is_small ? SmallDepthBlockBytes() : 64_MiB,
+        .blockSize =
+            is_small ? SmallDepthBlockBytes()
+                     : (Common::HostHasSmallVideoMemory() ? 32_MiB : 64_MiB),
         .minBlockCount = is_small ? 0U : min_blocks,
         .maxBlockCount = 0,
         .priority = 0.f,
