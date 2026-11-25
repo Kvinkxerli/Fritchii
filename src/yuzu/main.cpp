@@ -348,12 +348,14 @@ constexpr std::pair<const char*, const char*> BuiltinSwitches[] = {
     {"FRITCHII_NOTED_OVERFLOW", "1"},     {"FRITCHII_ONEF_UBO_KEEP", "2"},
     {"FRITCHII_BANK_FAST", "1"},          {"FRITCHII_FILL_GEOM_KEEP", "1"},
     {"FRITCHII_FILL_UPDATE_KEEP", "1"},   {"FRITCHII_HANDLE_PROG_KEEP", "1"},
-    {"FRITCHII_FILL_BRACKET_LEAN", "1"},
+    {"FRITCHII_FILL_BRACKET_LEAN", "1"},  {"FRITCHII_ONEF_MESH_EMU_ASYNC", "1"},
+    {"FRITCHII_ESPLIT", "1"},             {"FRITCHII_ESPLIT_FLUSH_ASYNC", "1"},
+    {"FRITCHII_ESPLIT_BIND_BATCH", "1"},
 #ifdef _WIN32
     // Tested on Windows only (the Linux test builds ran without them).
     {"FRITCHII_JIT_PIN", "1"},            {"FRITCHII_JIT_PIN_REGS", "x8,x0"},
     {"FRITCHII_ONEF_PIN", "2"},           {"FRITCHII_GPU_PRIORITY", "2"},
-    {"FRITCHII_THREAD_QOS", "1"},         {"FRITCHII_ZERO_TRIM_BATCH", "1"},
+    {"FRITCHII_THREAD_QOS", "1"},         {"EDEN_HYBRID_CORES", "4"},         {"FRITCHII_ZERO_TRIM_BATCH", "1"},
     {"FRITCHII_ZERO_TRIM_CHUNK", "1"},    {"FRITCHII_ZERO_UPLOAD", "0"},
     {"FRITCHII_REPORT_WAIT", "1"},        {"FRITCHII_FENCE_COPY_UNLOCKED", "1"},
 #endif
