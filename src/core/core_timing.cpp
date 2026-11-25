@@ -603,10 +603,9 @@ std::optional<s64> CoreTiming::Advance() {
                 // sysmix pump) would otherwise wait out the pause again after it.
                 const s64 now_ns{GetGlobalTimeNs().count()};
                 const s64 late_ns{now_ns - evt_time};
-                const s64 pause_end{pause_end_time.load(std::memory_order_relaxed)};
                 const std::chrono::nanoseconds late_since_pause{
-                    evt_time < pause_end ? (std::min)(late_ns, now_ns - pause_end)
-                                         : late_ns};
+                    evt_time < pause_end_time ? (std::min)(late_ns, now_ns - pause_end_time)
+                                              : late_ns};
                 const auto new_schedule_time{event_type->callback(evt_time, late_since_pause)};
                 NoteCallback(*event_type, now_ns, GetGlobalTimeNs().count(),
                              late_since_pause.count());
@@ -625,8 +624,8 @@ std::optional<s64> CoreTiming::Advance() {
                 // If this event was scheduled into a pause, its time now is going to be way
                 // behind. Re-set this event to continue from the end of the pause.
                 auto next_time{evt.time + next_schedule_time};
-                if (evt.time < pause_end) {
-                    next_time = pause_end + next_schedule_time;
+                if (evt.time < pause_end_time) {
+                    next_time = pause_end_time + next_schedule_time;
                 }
 
                 event_queue.update(evt.handle, Event{next_time, event_fifo_id++, evt.type,
