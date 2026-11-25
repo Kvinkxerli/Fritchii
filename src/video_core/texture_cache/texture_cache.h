@@ -2307,6 +2307,10 @@ void TextureCache<P>::TickFrame() {
                 False(image.flags & ImageFlagBits::Registered)) {
                 continue;
             }
+            if (True(image.flags & ImageFlagBits::GpuModified)) {
+                image.flags &= ~ImageFlagBits::TransientTarget;
+                continue;
+            }
             const u64 last_use = lru_cache.Tick(image.lru_index);
             if (frame_tick - last_use < rt_evict || True(image.flags & ImageFlagBits::IsDecoding)) {
                 if (++entry.survived < 4) {
