@@ -345,6 +345,10 @@ constexpr std::pair<const char*, const char*> BuiltinSwitches[] = {
     {"FRITCHII_SWEEP_SUPERSEDED", "3"},
     {"FRITCHII_OCCL_LEAN", "1"},          {"FRITCHII_BIND_SKIP", "2"},
     {"FRITCHII_STEP_LEAN", "1"},          {"FRITCHII_REFRESH_LEAN", "1"},
+    {"FRITCHII_NOTED_OVERFLOW", "1"},     {"FRITCHII_ONEF_UBO_KEEP", "2"},
+    {"FRITCHII_BANK_FAST", "1"},          {"FRITCHII_FILL_GEOM_KEEP", "1"},
+    {"FRITCHII_FILL_UPDATE_KEEP", "1"},   {"FRITCHII_HANDLE_PROG_KEEP", "1"},
+    {"FRITCHII_FILL_BRACKET_LEAN", "1"},
 #ifdef _WIN32
     // Tested on Windows only (the Linux test builds ran without them).
     {"FRITCHII_JIT_PIN", "1"},            {"FRITCHII_JIT_PIN_REGS", "x8,x0"},
