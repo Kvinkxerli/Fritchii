@@ -9935,7 +9935,8 @@ bool RasterizerVulkan::TryOcarinaUpscale(const ComputePipeline& pipeline, bool r
         }
         const auto choice = VideoCommon::SelectOcarinaScaledOutput(
             {color_real.width, color_real.height}, {target_extent.width, target_extent.height},
-            output_plan.native_aa, keep_composite, composite_extent);
+            output_plan.native_aa, keep_composite,
+            {composite_extent.width, composite_extent.height});
         render_extent = color_real;
         output_extent = {choice.output.width, choice.output.height};
         use_4k = choice.upscale_4k;
