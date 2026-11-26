@@ -5571,8 +5571,6 @@ void Maxwell3D::WaitAndSyncAsyncE2c() {
     }
     if (VideoCommon::ESplit::ShouldHand()) {
         VideoCommon::ESplit::WaitCondition(e2c_async_done_seq, e2c_async_posted_seq);
-    } else {
-        const VideoCommon::ESplit::JoinScope join{VideoCommon::ESplit::Join::Condition, true};
     }
     (void)TrySyncAsyncE2c();
 }

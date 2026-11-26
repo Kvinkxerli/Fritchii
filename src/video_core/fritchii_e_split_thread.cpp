@@ -547,13 +547,6 @@ inline void PrefetchLine(const void* address) noexcept {
 /// on E2's start (after main() applied nx2_switches.txt).
 bool g_wake_each = false;
 
-void WakeE1() noexcept {
-    if (g.e1_sleeping.load(std::memory_order_seq_cst)) {
-        g.e1_wake.fetch_add(1, std::memory_order_seq_cst);
-        g.e1_wake.notify_all();
-    }
-}
-
 void WakeE1Fenced() noexcept {
     if (g.e1_sleeping.load(std::memory_order_relaxed)) {
         g.e1_wake.fetch_add(1, std::memory_order_seq_cst);

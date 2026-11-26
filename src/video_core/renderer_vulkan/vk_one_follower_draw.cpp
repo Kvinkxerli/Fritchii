@@ -399,6 +399,7 @@ OneF::LentReason OneFollowerDraw::UnlentBlocker(Maxwell3D& engine, bool is_index
                 VideoCommon::ESplit::NoteStall(VideoCommon::ESplit::StallCause::MemoryDecision);
                 // FRITCHII_ESPLIT=1: E1 reads game memory in the test, a join.
                 const VideoCommon::ESplit::JoinScope esplit_join{VideoCommon::ESplit::Join::Decision};
+                const u64 pre_test_epoch = VideoCommon::ShaderCache::InvalidationEpoch();
                 is_reset = RasterizerVulkan::IsNx2IndirectResetOn(engine, memory, false, 1);
                 if (e_split_async && ((program + 128) & 0xfffU) + code_bytes <= 0x1000U) {
                     if (const auto dev = memory.GpuToCpuAddress(program + 128);
@@ -408,7 +409,7 @@ OneF::LentReason OneFollowerDraw::UnlentBlocker(Maxwell3D& engine, bool is_index
                             .device = *dev,
                             .map_serial = map_serial,
                             .as_id = as_id,
-                            .inval_epoch = VideoCommon::ShaderCache::InvalidationEpoch(),
+                            .inval_epoch = pre_test_epoch,
                             .valid = true,
                             .result = is_reset,
                         };
