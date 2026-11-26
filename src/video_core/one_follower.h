@@ -676,6 +676,7 @@ void WatchLock(const char* name, const Common::SpinRecursiveMutex* mutex) noexce
 /// bit) for the counters, PackSpans puts all of it in the draw span. Consumed by the next packet;
 /// a draw packet without it still carries the draw manager's values (kind 0).
 void SetNextDraw(u32 kind, bool indexed, bool indirect, u32 instance_arg) noexcept;
+void ClearNextDraw() noexcept;
 
 /// E: pushes a packet R plays while E goes on (PacketKind::Draw or Delta), within the window
 /// (FRITCHII_ONEF_AHEAD) and the ring's room. Fills number, position and draw_seq.

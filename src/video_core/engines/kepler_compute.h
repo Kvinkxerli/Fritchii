@@ -305,6 +305,10 @@ public:
     void SetGridMarker(Nx2ListDispatch::GridMarker* marker) {
         grid_marker = marker;
     }
+    [[nodiscard]] MemoryManager& GetMemoryManager() {
+        return memory_manager;
+    }
+
     void FrontCallMethod(Core::System& system, VideoCommon::GpuSplit& split, u32 method,
                          u32 argument, bool is_last_call, const GPUVAddr* segment);
     void FrontCallMultiMethod(Core::System& system, VideoCommon::GpuSplit& split, u32 method,

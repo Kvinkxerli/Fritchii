@@ -108,6 +108,9 @@ template <typename Engine>
 void Maxwell3D::DrawManager::Clear(Engine& maxwell3d, u32 layer_count) {
     // EDEN_NX2_MEMSTAGE_STATS: clears render-enable skips.
     if constexpr (IsBack<Engine>) {
+        if (maxwell3d.HasPendingAsyncE2c()) [[unlikely]] {
+            maxwell3d.WaitAndSyncAsyncE2c();
+        }
         VideoCommon::MemStageStats::Clear(!maxwell3d.ShouldExecute());
     }
     if (maxwell3d.ShouldExecute()) {
@@ -444,9 +447,14 @@ void Maxwell3D::DrawManager::ProcessDraw(Engine& maxwell3d, bool draw_indexed, u
         if (VideoCommon::MemStageShadow::g_on.load(std::memory_order_relaxed)) [[unlikely]] {
             VideoCommon::MemStageShadow::BackDraw(maxwell3d, draw_indexed, instance_count, false);
         }
+        if (maxwell3d.HasPendingAsyncE2c()) [[unlikely]] {
+            (void)maxwell3d.TrySyncAsyncE2c();
+        }
+        const bool e2c_pending = maxwell3d.HasPendingAsyncE2c();
+        const bool should_execute = e2c_pending || maxwell3d.ShouldExecute();
         // EDEN_NX2_MEMSTAGE_STATS: draws per channel, and those render-enable skips (section 4).
-        VideoCommon::MemStageStats::Draw(!maxwell3d.ShouldExecute());
-        if (maxwell3d.ShouldExecute()) {
+        VideoCommon::MemStageStats::Draw(!should_execute);
+        if (should_execute) {
             maxwell3d.rasterizer->Draw(draw_indexed, instance_count);
         } else {
             TraceSuppressedDraw(maxwell3d, false);
@@ -464,6 +472,9 @@ void Maxwell3D::DrawManager::ProcessDrawIndirect(Engine& maxwell3d) {
     } else {
         if (VideoCommon::MemStageShadow::g_on.load(std::memory_order_relaxed)) [[unlikely]] {
             VideoCommon::MemStageShadow::BackDraw(maxwell3d, indirect_state.is_indexed, 1, true);
+        }
+        if (maxwell3d.HasPendingAsyncE2c()) [[unlikely]] {
+            maxwell3d.WaitAndSyncAsyncE2c();
         }
         VideoCommon::MemStageStats::Draw(!maxwell3d.ShouldExecute());
         if (maxwell3d.ShouldExecute()) {

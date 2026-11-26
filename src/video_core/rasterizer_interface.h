@@ -331,6 +331,10 @@ public:
         return false;
     }
 
+    [[nodiscard]] virtual bool MayEndConditionalRendering() const noexcept {
+        return true;
+    }
+
     /// Attempt to use a faster method to perform a surface copy
     [[nodiscard]] virtual bool AccelerateSurfaceCopy(
         const Tegra::Engines::Fermi2D::Surface& src, const Tegra::Engines::Fermi2D::Surface& dst,

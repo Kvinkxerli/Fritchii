@@ -1070,12 +1070,13 @@ bool OneFollowerDraw::FillAndPush(Maxwell3D& engine, bool is_indexed, u64 seq, b
                 u64 position;
                 u64 seq;
                 u64 packet_bytes;
+                u64 e2c_seq;
                 OneF::PacketHeader header;
                 bool is_indexed;
                 bool list;
                 bool flush;
-            } tail{this, &engine, pipeline, slot.packet, position, seq, 0, {}, is_indexed, list,
-                   esplit_late_flush};
+            } tail{this, &engine, pipeline, slot.packet, position, seq, 0,
+                   engine.PendingAsyncE2cSeq(), {}, is_indexed, list, esplit_late_flush};
             static_assert(sizeof(AsyncTail) <= ESplit::AsyncPayloadBytes);
             static_assert(std::is_trivially_copyable_v<AsyncTail>);
             tail.packet_bytes =
@@ -1086,6 +1087,11 @@ bool OneFollowerDraw::FillAndPush(Maxwell3D& engine, bool is_indexed, u64 seq, b
                 AsyncTail t;
                 std::memcpy(&t, raw, sizeof(t));
                 OneFollowerDraw& self = *t.self;
+                if (t.e2c_seq != 0 && !t.engine->E2AsyncShouldExecute()) {
+                    t.header.kind = OneF::PacketKind::Delta;
+                    OneF::PushDrawPacked(t.header, t.packet, t.packet_bytes, 0);
+                    return;
+                }
                 if (t.flush) {
                     auto& memory_manager = t.engine->GetMemoryManager();
                     if (memory_manager.HasPendingCachedWrites() ||
@@ -1227,13 +1233,30 @@ bool OneFollowerDraw::RouteDraw(bool is_indexed, u32 instance_count) {
     // The draw span's caller-known values (part a/b: the packet's kind for the counters, and
     // `indexed` and `instance_arg`, which PlayDraw reads): set for whichever packet comes next.
     OneF::SetNextDraw(kind, is_indexed, false, instance_count);
+    const auto skip_suppressed_e2c = [&] {
+        if (!engine.HasPendingAsyncE2c()) {
+            return false;
+        }
+        engine.WaitAndSyncAsyncE2c();
+        if (engine.ShouldExecute()) {
+            return false;
+        }
+        OneF::ClearNextDraw();
+        return true;
+    };
     if (step < StepLevel::Unlend) {
+        if (skip_suppressed_e2c()) {
+            return true;
+        }
         LendDraw(is_indexed, instance_count, LentReason::StepBelowUnlend, true);
         return true;
     }
     const u32 mask = static_cast<u32>(VideoCore::Nx2Debug::SwitchValue(
         VideoCore::Nx2Debug::g_onef_unlend, "FRITCHII_ONEF_UNLEND"));
     if ((mask & kind & PlayableKinds) == 0) {
+        if (skip_suppressed_e2c()) {
+            return true;
+        }
         LendDraw(is_indexed, instance_count, LentReason::KindNotInMask, false);
         return true;
     }
@@ -1250,6 +1273,9 @@ bool OneFollowerDraw::RouteDraw(bool is_indexed, u32 instance_count) {
         reason = LentReason::NoPath;
     }
     if (reason == LentReason::Count && FillAndPush(engine, is_indexed, seq, false, reason)) {
+        return true;
+    }
+    if (skip_suppressed_e2c()) {
         return true;
     }
     if (reason == LentReason::Transient && filled_refused) {

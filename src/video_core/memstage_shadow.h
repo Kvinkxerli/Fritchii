@@ -50,6 +50,8 @@ enum class StageTag : u8 {
     /// header, sent mask, pair mask, arguments two to a word, check words]. The writes are
     /// OotOps::Expand's; each sent one as a Pairs word (pair mask bit) or a Direct method entry.
     Ops = 7,
+    /// Maxwell3D::BackE2cCondition: evaluated at E's stream place without draining E2 when async.
+    E2c = 8,
 };
 
 /// StageTag::DrawLoop's kind, in header bits 40-47 (the payloads stay as small as the lambdas

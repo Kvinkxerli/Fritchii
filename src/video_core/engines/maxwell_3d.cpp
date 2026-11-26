@@ -136,6 +136,8 @@ struct Maxwell3D::StageCall {
         VideoCommon::StageDrawLoopBits(VideoCommon::StageDrawLoop::AddLoopInstances);
     static constexpr u64 ListDrawFlags =
         VideoCommon::StageDrawLoopBits(VideoCommon::StageDrawLoop::ListDraw);
+    static constexpr u64 E2cConditionFlags =
+        VideoCommon::StageTagBits(VideoCommon::StageTag::E2c);
     // The words the stage reads (memstage_shadow.cpp), and ring entries as large as the lambdas
     // these replaced ([this, &system], [this], [self, count], [this, address, keep_id]).
     static void CheckLayout() {
@@ -988,6 +990,7 @@ void Maxwell3D::CallMethodFast(u32 method, u32 method_argument, bool is_last_cal
     if (!execution_mask[method]) {
         return WriteStateRegister(method, method_argument);
     }
+    SyncE2cForMethod(method);
     const u32 argument = ProcessShadowRam(method, method_argument);
     ProcessDirtyRegisters(method, argument);
     constexpr u32 cb_data = MAXWELL3D_REG_INDEX(const_buffer.buffer);
@@ -1260,6 +1263,7 @@ void Maxwell3D::CallMethodSlow(Core::System& system, u32 method, u32 method_argu
         back_control_writes[back_control_count++ % back_control_writes.size()] = {
             method_argument, static_cast<u32>(shadow_state.shadow_ram_control), is_last_call ? 1U : 0U};
     }
+    SyncE2cForMethod(method);
     const u32 argument = ProcessShadowRam(method, method_argument);
     // A state register written with the value it holds changes nothing: no dirty flags (they
     // would make the next draw re-check that state), no method processing. Title 1 makes ~6
@@ -5343,7 +5347,8 @@ void Maxwell3D::FrontSendE2cCondition(VideoCommon::GpuSplit& split, FrontState& 
         fs.draw_pending ? Effect::Gpu : Effect::None, FrontMethodEffect(method));
     const GPUVAddr source = (GPUVAddr{fs.regs[0x154] & 0x1ffffff} << 32) | fs.regs[0x155];
     split.Defer(StageCall::E2cCondition{this, fs.system, source, p0, front_value, verify ? 1U : 0U},
-                effect, VideoCommon::Nx2FastDrawCount::Neutral());
+                effect,
+                VideoCommon::Nx2FastDrawCount::Neutral() | StageCall::E2cConditionFlags);
     fs.sink_pending = false; // The call consumes the sink first, as the Direct write did
     if (verify) {
         ++stats.verify_sent;
@@ -5380,13 +5385,8 @@ void Maxwell3D::FrontSendE2cCondition(VideoCommon::GpuSplit& split, FrontState& 
                                                       "FRITCHII_E2C_ON_E"));
 }
 
-void Maxwell3D::BackE2cCondition(Core::System& system, GPUVAddr source, u32 p0, u32 front_value,
-                                 bool verify) {
+u32 Maxwell3D::EvaluateE2cMode(GPUVAddr source, u32 p0, u32 front_value, bool verify) {
     namespace OneF = VideoCommon::OneFollower;
-    // FRITCHII_ESPLIT_COUNT: this untagged call is a condition from game memory, E2's (the draws
-    // after it are forwarded, decided on E2).
-    VideoCommon::ESplit::SetEntryClass(VideoCommon::ESplit::Class::E2);
-    VideoCommon::ESplit::NoteCondition();
     auto& stats = g_e2c_back;
     constexpr size_t read_bytes = 6 * sizeof(u32);
     // The drained read (FrontDmaRead's miss path), here at the entry's stream place by the
@@ -5435,30 +5435,146 @@ void Maxwell3D::BackE2cCondition(Core::System& system, GPUVAddr source, u32 p0, 
             }
         }
     }
-    // As a Direct entry of the write (GpuSplit::Execute): the sink first, then the method.
-    ConsumeSink(system);
-    CallMethod(system, MAXWELL3D_REG_INDEX(render_enable.mode), verify ? front_value : mode, true);
+    const u32 result_mode = verify ? front_value : mode;
     const auto now = std::chrono::steady_clock::now();
     if (stats.since == std::chrono::steady_clock::time_point{}) {
         stats.since = now;
+    } else if (const double seconds = std::chrono::duration<double>(now - stats.since).count();
+               seconds >= 10.0) {
+        const auto rate = [seconds](u64 count) { return static_cast<double>(count) / seconds; };
+        LOG_INFO(HW_GPU,
+                 "0xe2c on E: E {:.0f} s: evaluated {:.0f}/s ({:.0f}/s True), waited for R's report "
+                 "ops {:.0f}/s, buffer flushes {:.0f}/s, report flushes {:.0f}/s; verify {} "
+                 "compared, {} differed (must be 0; {} this session)",
+                 seconds, rate(stats.evaluated), rate(stats.true_modes), rate(stats.waited),
+                 rate(stats.buffer_flushes), rate(stats.report_flushes), stats.compared,
+                 stats.differed, stats.session_differed);
+        const u64 session = stats.session_differed;
+        stats = {};
+        stats.since = now;
+        stats.session_differed = session;
+    }
+    return result_mode;
+}
+
+void Maxwell3D::BackE2cCondition(Core::System& system, GPUVAddr source, u32 p0, u32 front_value,
+                                 bool verify) {
+    // FRITCHII_ESPLIT_COUNT: this call is a condition from game memory, E2's (the draws
+    // after it are forwarded, decided on E2).
+    VideoCommon::ESplit::SetEntryClass(VideoCommon::ESplit::Class::E2);
+    VideoCommon::ESplit::NoteCondition();
+    const u32 result_mode = EvaluateE2cMode(source, p0, front_value, verify);
+    // As a Direct entry of the write (GpuSplit::Execute): the sink first, then the method.
+    ConsumeSink(system);
+    CallMethod(system, MAXWELL3D_REG_INDEX(render_enable.mode), result_mode, true);
+}
+
+bool Maxwell3D::EnqueueAsyncE2c(Core::System& system, const u64* call_payload) {
+    if (rasterizer == nullptr || rasterizer->MayEndConditionalRendering()) {
+        return false;
+    }
+    StageCall::E2cCondition call{};
+    std::memcpy(&call, call_payload, sizeof(call));
+    if (call.engine != this) {
+        return false;
+    }
+    ConsumeSink(system);
+    void* const slot = VideoCommon::ESplit::BeginAsync(VideoCommon::ESplit::Hand::Async);
+    if (slot == nullptr) {
+        return false;
+    }
+    struct AsyncE2cJob {
+        Maxwell3D* engine;
+        Core::System* system;
+        GPUVAddr source;
+        u32 p0;
+        u32 front_value;
+        u32 verify;
+        u32 override_val;
+        u64 seq;
+    };
+    static_assert(sizeof(AsyncE2cJob) <= VideoCommon::ESplit::AsyncPayloadBytes);
+    static_assert(std::is_trivially_copyable_v<AsyncE2cJob>);
+    const AsyncE2cJob job{
+        this,
+        call.system,
+        call.source,
+        call.p0,
+        call.front_value,
+        call.verify,
+        static_cast<u32>(regs.render_enable_override),
+        ++e2c_async_posted_seq,
+    };
+    std::memcpy(slot, &job, sizeof(job));
+    VideoCommon::ESplit::PostAsync([](void* raw) {
+        AsyncE2cJob j;
+        std::memcpy(&j, raw, sizeof(j));
+        j.engine->BackE2cConditionAsync(*j.system, j.source, j.p0, j.front_value, j.verify != 0,
+                                        j.override_val, j.seq);
+    });
+    return true;
+}
+
+void Maxwell3D::BackE2cConditionAsync(Core::System& system, GPUVAddr source, u32 p0,
+                                      u32 front_value, bool verify, u32 override_val, u64 seq) {
+    (void)system;
+    const u32 result_mode = EvaluateE2cMode(source, p0, front_value, verify);
+    if (memory_manager.HasPendingCachedWrites()) {
+        memory_manager.FlushCaching();
+    }
+    VideoCommon::OneFollower::CountQueryKind(VideoCommon::OneFollower::QueryKind::ConditionSkipped);
+    const auto ov = static_cast<Regs::RenderEnable::Override>(override_val);
+    const bool exec_on = ov == Regs::RenderEnable::Override::AlwaysRender  ? true
+                         : ov == Regs::RenderEnable::Override::NeverRender ? false
+                         : result_mode == static_cast<u32>(Regs::RenderEnable::Mode::True);
+    e2c_e2_execute_on = exec_on;
+    e2c_async_done_mode.store(result_mode, std::memory_order_relaxed);
+    e2c_async_done_execute.store(exec_on, std::memory_order_relaxed);
+    e2c_async_done_seq.store(seq, std::memory_order_release);
+}
+
+void Maxwell3D::ApplyAsyncE2cMode(u32 mode, bool exec_on, u64 seq) noexcept {
+    constexpr u32 method = MAXWELL3D_REG_INDEX(render_enable.mode);
+    const u32 arg = ProcessShadowRam(method, mode);
+    if (draw_manager.HasDeferredDraw()) [[unlikely]] {
+        draw_manager.DrawDeferred(*this, true);
+    }
+    if (VideoCommon::Nx2FastDrawCount::g_on) [[unlikely]] {
+        NoteFastDrawCountWrite(method, arg);
+    }
+    regs.reg_array[method] = arg;
+    if (VideoCommon::OneFollower::g_track_writes_always ||
+        VideoCommon::OneFollower::g_track_writes.load(std::memory_order_relaxed)) [[unlikely]] {
+        VideoCommon::OneFollower::NoteRegWrite(method);
+    }
+    execute_on = exec_on;
+    e2c_async_sync_seq = seq;
+}
+
+bool Maxwell3D::TrySyncAsyncE2c() noexcept {
+    if (!HasPendingAsyncE2c()) {
+        return true;
+    }
+    if (e2c_async_done_seq.load(std::memory_order_acquire) < e2c_async_posted_seq) {
+        return false;
+    }
+    ApplyAsyncE2cMode(e2c_async_done_mode.load(std::memory_order_relaxed),
+                      e2c_async_done_execute.load(std::memory_order_relaxed), e2c_async_posted_seq);
+    return true;
+}
+
+void Maxwell3D::WaitAndSyncAsyncE2c() {
+    if (!HasPendingAsyncE2c() || TrySyncAsyncE2c()) {
         return;
     }
-    const double seconds = std::chrono::duration<double>(now - stats.since).count();
-    if (seconds < 10.0) {
-        return;
+    const VideoCommon::ESplit::JoinScope join{VideoCommon::ESplit::Join::Condition, true};
+    (void)TrySyncAsyncE2c();
+}
+
+void Maxwell3D::SyncAsyncE2cFromJoin() noexcept {
+    if (HasPendingAsyncE2c()) {
+        (void)TrySyncAsyncE2c();
     }
-    const auto rate = [seconds](u64 count) { return static_cast<double>(count) / seconds; };
-    LOG_INFO(HW_GPU,
-             "0xe2c on E: E {:.0f} s: evaluated {:.0f}/s ({:.0f}/s True), waited for R's report "
-             "ops {:.0f}/s, buffer flushes {:.0f}/s, report flushes {:.0f}/s; verify {} "
-             "compared, {} differed (must be 0; {} this session)",
-             seconds, rate(stats.evaluated), rate(stats.true_modes), rate(stats.waited),
-             rate(stats.buffer_flushes), rate(stats.report_flushes), stats.compared,
-             stats.differed, stats.session_differed);
-    const u64 session = stats.session_differed;
-    stats = {};
-    stats.since = now;
-    stats.session_differed = session;
 }
 
 void Maxwell3D::FrontResolveE2cMode(VideoCommon::GpuSplit& split, FrontState& fs) {
@@ -6418,6 +6534,7 @@ void ApplyDeltaWrites(Maxwell3D& maxwell3d, const u64* writes, u32 count) {
     for (u32 i = 0; i < count; ++i) {
         const u32 method = static_cast<u32>(writes[i]) & 0xffff;
         const u32 value = static_cast<u32>(writes[i] >> 32);
+        maxwell3d.SyncE2cForMethod(method);
         if constexpr (Track) {
             shadow_array[method] = value;
         }

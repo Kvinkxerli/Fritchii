@@ -3444,6 +3444,14 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
     // with the verify or, at step 4, fills ring B and pushes it. Before anything below reads
     // `maxwell3d` (it names R's view while R plays a draw).
     if (VideoCommon::OneFollower::ShouldLend()) [[unlikely]] {
+        if (maxwell3d->HasPendingAsyncE2c()) [[unlikely]] {
+            if (VideoCommon::OneFollower::Step() < VideoCommon::OneFollower::StepLevel::Build) {
+                maxwell3d->WaitAndSyncAsyncE2c();
+                if (!maxwell3d->ShouldExecute()) {
+                    return;
+                }
+            }
+        }
         OneFollowerMirrorDraw();
         OneFollowerLendDraw(is_indexed, instance_count);
         return;
@@ -10349,6 +10357,11 @@ void RasterizerVulkan::TickFrame() {
         g_frame_end_times.End(FrameEndTimes::Buffers);
         g_frame_end_times.Finish(VideoCommon::OneFollower::OnRenderThread());
     }
+}
+
+bool RasterizerVulkan::MayEndConditionalRendering() const noexcept {
+    return onef_condition_may_be_set || !VideoCommon::OneFollower::ShouldLend() ||
+           !VideoCommon::OneFollower::QueryOps();
 }
 
 bool RasterizerVulkan::AccelerateConditionalRendering() {

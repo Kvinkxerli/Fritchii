@@ -137,7 +137,7 @@ void Pause() noexcept {
 #endif
 }
 
-constexpr u64 Slots = 64;          ///< hand-over ring
+constexpr u64 Slots = 256;         ///< hand-over ring
 constexpr int MaxDepth = 48;       ///< FRITCHII_ESPLIT_DEPTH's cap (draw tails ahead)
 constexpr u64 SampleMask = 63;     ///< 1 hand-over in 64 compared (or hashed)
 constexpr size_t HandCount = static_cast<size_t>(Hand::Count);
@@ -971,6 +971,7 @@ void WaitDrained() {
 void ToEngine() {
     if (Maxwell3D* const engine = OneF::Engine()) {
         ApplyBackRaises(*engine);
+        engine->SyncAsyncE2cFromJoin();
     }
     SyncFlagsToEngine();
 }

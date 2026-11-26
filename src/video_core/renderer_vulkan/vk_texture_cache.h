@@ -549,7 +549,7 @@ public:
     /// off or while the fit does not apply. Set with pool_fit_cap.
     u64 pool_floor_bytes{};
     /// How long an image waits in the pool while only the floor keeps it (frames).
-    static constexpr u64 ImagePoolFloorFrames = 16;
+    static constexpr u64 ImagePoolFloorFrames = 90;
     /// FRITCHII_SMALL_CARD (part Pool): 1/16 of the budget, at least 256 MiB; ~0 while off.
     /// Re-read every 30 frames with the budget.
     u64 small_pool_cap{~u64{0}};

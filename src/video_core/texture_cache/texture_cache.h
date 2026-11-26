@@ -192,7 +192,7 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
         high_priority_mode = out_of_memory || total_used_memory >= expected_memory;
         aggressive_mode =
             allow_aggressive && (out_of_memory || total_used_memory >= critical_memory);
-        ticks_to_destroy = aggressive_mode ? 10ULL : high_priority_mode ? 25ULL : 300ULL;
+        ticks_to_destroy = aggressive_mode ? 10ULL : high_priority_mode ? 120ULL : 300ULL;
         // EDEN_NX2_TC_MIN_AGE=<frames>: never evict images used more recently (thrash tests).
         static const u64 min_age = [] {
             const char* value = std::getenv("EDEN_NX2_TC_MIN_AGE");
@@ -1484,10 +1484,12 @@ void TextureCache<P>::BudgetControl() {
             budget_cap = (std::max)(from - (std::min)(from, (std::min)(over, u64{1_GiB})),
                                     budget / 2);
         } else if (budget_cap != ~0ULL) {
-            // A dead band of half the headroom, so the cap does not chase the usage up and down.
+            // Small hysteresis band so budget_cap recovers once usage drops cleanly under target
+            // instead of trapping low-VRAM cards in a low cap for hundreds of seconds.
             const u64 room = target - usage;
-            if (room > headroom / 2) {
-                budget_cap += (std::min)(room - headroom / 2, u64{256_MiB});
+            const u64 recover_band = (std::min)(headroom / 8, u64{32_MiB});
+            if (room > recover_band) {
+                budget_cap += (std::min)(room - recover_band, u64{256_MiB});
             }
         }
         if (budget_cap >= base_critical_memory) {
@@ -1497,9 +1499,9 @@ void TextureCache<P>::BudgetControl() {
         // or above the base (a 16 GB card: half the budget is over Fritchii's 7,680 MiB ceiling,
         // so the 4K session's spill came with the cache already past a critical it could not
         // hold): the collector's extra deletes, the fitted pool and the evictions before creates
-        // then act on the base thresholds. It ends half a headroom under the target.
+        // then act on the base thresholds.
         const bool over_target = mode != 0 && usage > target;
-        const bool well_under = usage + headroom / 2 <= target;
+        const bool well_under = usage + (std::min)(headroom / 4, u64{64_MiB}) <= target;
         budget_pressure =
             budget_cap != ~0ULL || over_target || (budget_pressure && mode != 0 && !well_under);
         if constexpr (requires { runtime.SetBudgetPressure(true); }) {
@@ -1516,7 +1518,7 @@ void TextureCache<P>::BudgetControl() {
                 }
             }
             const u64 other = total_used_memory - (std::min)(total_used_memory, live_image_bytes);
-            const u64 small_img_floor = (std::min)(budget / 4, u64{768_MiB});
+            const u64 small_img_floor = (std::min)(budget / 3, u64{1024_MiB});
             const u64 cap_expected = (std::min)(other + small_img_floor,
                                                 base_expected_memory);
             if (expected_memory < cap_expected) {

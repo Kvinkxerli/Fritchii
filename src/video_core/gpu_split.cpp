@@ -4816,6 +4816,13 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                     // bind lends, and the lend parks both stages (fritchii_e_split.h).
                     info.channel = true;
                     break;
+                case StageTag::E2c:
+                    if (!ESplit::g_async || MemStageShadow::g_on.load(std::memory_order_relaxed)) {
+                        join(JoinCause::UntaggedCall);
+                    } else {
+                        info.cls = Class::E2;
+                    }
+                    break;
                 case StageTag::Level:
                     join(JoinCause::UntaggedCall); // no tag: unclassified
                     break;
@@ -4879,12 +4886,73 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
             }
             return info;
         };
+        // Track linear compute upload destination on E1 so inline QMD/uniform data_upload entries
+        // check the shader page filter instead of forcing a Lookup join on every compute dispatch.
+        struct ComputeUploadTrack {
+            const Tegra::Engines::EngineInterface* engine{};
+            u32 line_length_in{};
+            u32 line_count{1};
+            u32 pitch{};
+            u32 addr_high{};
+            u32 addr_low{};
+            bool have_high{};
+            bool have_low{};
+            bool linear{true};
+
+            void Reset() noexcept {
+                engine = nullptr;
+                have_high = false;
+                have_low = false;
+                linear = true;
+            }
+            void NoteReg(const Tegra::Engines::EngineInterface* e, u32 m, u32 val) noexcept {
+                if (e != engine) {
+                    Reset();
+                    engine = e;
+                }
+                using Tegra::Engines::KeplerCompute;
+                if (m == KEPLER_COMPUTE_REG_INDEX(upload.line_length_in)) {
+                    line_length_in = val;
+                } else if (m == KEPLER_COMPUTE_REG_INDEX(upload.line_count)) {
+                    line_count = val;
+                } else if (m == KEPLER_COMPUTE_REG_INDEX(upload.dest.pitch)) {
+                    pitch = val;
+                } else if (m == KEPLER_COMPUTE_REG_INDEX(upload.dest.address_high)) {
+                    addr_high = val;
+                    have_high = true;
+                } else if (m == KEPLER_COMPUTE_REG_INDEX(upload.dest.address_low)) {
+                    addr_low = val;
+                    have_low = true;
+                } else if (m == KEPLER_COMPUTE_REG_INDEX(exec_upload)) {
+                    linear = (val & 1U) != 0;
+                }
+            }
+            bool NoteDataUpload(Tegra::Engines::KeplerCompute* kc, u32 word_count) const noexcept {
+                if (kc != engine || !have_high || !have_low || !linear) {
+                    return false;
+                }
+                if (line_count > 1 && pitch == 0) {
+                    return false;
+                }
+                const GPUVAddr addr = (GPUVAddr{addr_high} << 32) | addr_low;
+                const u64 min_bytes = u64{word_count} * sizeof(u32);
+                const u64 span = line_count <= 1
+                                     ? std::max<u64>(min_bytes, line_length_in)
+                                     : std::max<u64>(min_bytes,
+                                                     u64{pitch} * u64{line_count - 1} +
+                                                         u64{line_length_in});
+                ESplit::NoteQueuedWrite(&kc->GetMemoryManager(), addr, span);
+                return true;
+            }
+        } compute_upload{};
+
         // FRITCHII_ESPLIT=1: an E2 entry runs on E2 (E1 applies the sunk register writes first,
         // as Execute would first thing, and builds the record of E2's view); a join entry runs
         // here with E2 idle (S1) or drained (S2); an E1 entry runs here and hands its own E2
         // parts over (a draw's flush and tail, a bind's buffer cache half).
-        const auto esplit_execute = [this](const ESplit::EntryInfo& info, const u64* entry,
-                                           size_t words) -> size_t {
+        const auto esplit_execute = [this, &compute_upload](const ESplit::EntryInfo& info,
+                                                            const u64* entry,
+                                                            size_t words) -> size_t {
             if (info.cls == ESplit::Class::E2 && ESplit::g_async) {
                 // The queued mode: no hand-over per entry. A 3D constant buffer entry runs here
                 // (S4: its register half on E1's engine, each memory half queued for E2 in ring
@@ -4894,6 +4962,15 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                 const u64 head = entry[0];
                 const Kind kind = static_cast<Kind>(head & 0xf);
                 const ESplit::EngineKind engine_kind = ESplit::KindOf(back_engine);
+                if (!cb_on_e1 && kind == Kind::Call && StageTagOf(head) == StageTag::E2c &&
+                    engine_kind == ESplit::EngineKind::Maxwell3D &&
+                    ESplit::QueueKind(ESplit::KindCacheCalls) &&
+                    !MemStageShadow::g_on.load(std::memory_order_relaxed)) {
+                    if (static_cast<Tegra::Engines::Maxwell3D*>(back_engine)
+                            ->EnqueueAsyncE2c(*system, entry + 2)) {
+                        return PlainEntrySize(head);
+                    }
+                }
                 // FRITCHII_ESPLIT_ASYNC_KINDS bit 0: a cache-tagged call goes to E2 whole (its
                 // payload stays in ring A until `consumed` passes it, stored at E2's place).
                 if (!cb_on_e1 && kind == Kind::Call && StageTagOf(head) == StageTag::Cache &&
@@ -4928,26 +5005,60 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                     (kind == Kind::Method || kind == Kind::Multi || kind == Kind::Pairs) &&
                     ESplit::QueueKind(ESplit::KindCompute)) {
                     const size_t size = PlainEntrySize(head);
-                    // FRITCHII_ESPLIT_OWED: an upload or 2D/DMA/inline write may touch GPU/guest
-                    // memory anywhere: counted so the next lookup drains and flushes first.
-                    if (ESplit::g_owed_shader_rule) {
-                        if (engine_kind == ESplit::EngineKind::Compute) {
-                            const u32 compute_method = static_cast<u32>((head >> 8) & 0xffff);
-                            using Tegra::Engines::KeplerCompute;
-                            if (compute_method == KEPLER_COMPUTE_REG_INDEX(exec_upload) ||
-                                compute_method == KEPLER_COMPUTE_REG_INDEX(data_upload)) {
+                    if (engine_kind == ESplit::EngineKind::Compute) {
+                        using Tegra::Engines::KeplerCompute;
+                        auto* const kc = static_cast<KeplerCompute*>(back_engine);
+                        constexpr u32 exec_m = KEPLER_COMPUTE_REG_INDEX(exec_upload);
+                        constexpr u32 data_m = KEPLER_COMPUTE_REG_INDEX(data_upload);
+                        if (kind == Kind::Method) {
+                            const u32 m = static_cast<u32>((head >> 8) & 0xffff);
+                            const u32 arg = static_cast<u32>(head >> 32);
+                            compute_upload.NoteReg(back_engine, m, arg);
+                            if (ESplit::g_owed_shader_rule && m == data_m &&
+                                !compute_upload.NoteDataUpload(kc, 1)) {
                                 ESplit::NoteQueuedWriteAnywhere();
+                            }
+                        } else if (kind == Kind::Multi) {
+                            const u32 m = static_cast<u32>((head >> 8) & 0xffff);
+                            const u32 amount = static_cast<u32>(head >> 32);
+                            const size_t data_idx = (head & HasSegment) != 0 ? 3 : 2;
+                            const u32* const args = reinterpret_cast<const u32*>(entry + data_idx);
+                            if (m == data_m) {
+                                if (ESplit::g_owed_shader_rule &&
+                                    !compute_upload.NoteDataUpload(kc, amount)) {
+                                    ESplit::NoteQueuedWriteAnywhere();
+                                }
+                            } else {
+                                for (u32 i = 0; i < amount; ++i) {
+                                    compute_upload.NoteReg(back_engine, m, args[i]);
+                                }
+                                if (ESplit::g_owed_shader_rule && m == exec_m &&
+                                    !compute_upload.linear) {
+                                    ESplit::NoteQueuedWriteAnywhere();
+                                }
                             }
                         } else {
-                            const u32 other_method = static_cast<u32>((head >> 8) & 0xffff);
-                            const bool store =
-                                kind == Kind::Method &&
-                                ((head & Sink) != 0 ||
-                                 ((head & Direct) == 0 && back_engine != nullptr &&
-                                  !back_engine->execution_mask[other_method]));
-                            if (!store) {
-                                ESplit::NoteQueuedWriteAnywhere();
+                            const u32 count = static_cast<u32>(head >> 32);
+                            for (u32 i = 0; i < count; ++i) {
+                                const u64 pair = entry[1 + i];
+                                const u32 m = static_cast<u32>(pair & 0xffff);
+                                const u32 arg = static_cast<u32>(pair >> 32);
+                                compute_upload.NoteReg(back_engine, m, arg);
+                                if (ESplit::g_owed_shader_rule && m == data_m &&
+                                    !compute_upload.NoteDataUpload(kc, 1)) {
+                                    ESplit::NoteQueuedWriteAnywhere();
+                                }
                             }
+                        }
+                    } else if (ESplit::g_owed_shader_rule) {
+                        const u32 other_method = static_cast<u32>((head >> 8) & 0xffff);
+                        const bool store =
+                            kind == Kind::Method &&
+                            ((head & Sink) != 0 ||
+                             ((head & Direct) == 0 && back_engine != nullptr &&
+                              !back_engine->execution_mask[other_method]));
+                        if (!store) {
+                            ESplit::NoteQueuedWriteAnywhere();
                         }
                     }
                     struct EngineJob {
@@ -5023,6 +5134,7 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                 return work.size;
             }
             if (info.cls == ESplit::Class::Join && ESplit::g_async) {
+                compute_upload.Reset();
                 // The queued mode's join entries by kind (the 10 s line's top 8).
                 const u64 head = entry[0];
                 const Kind kind = static_cast<Kind>(head & 0xf);

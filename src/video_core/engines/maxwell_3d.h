@@ -6,6 +6,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <bitset>
 #include <cmath>
 #include <cstdlib>
@@ -3312,6 +3313,22 @@ public:
         return execute_on;
     }
 
+    [[nodiscard]] bool HasPendingAsyncE2c() const noexcept {
+        return e2c_async_posted_seq > e2c_async_sync_seq;
+    }
+    [[nodiscard]] u64 PendingAsyncE2cSeq() const noexcept {
+        return HasPendingAsyncE2c() ? e2c_async_posted_seq : 0;
+    }
+    [[nodiscard]] bool E2AsyncShouldExecute() const noexcept {
+        return e2c_e2_execute_on;
+    }
+    [[nodiscard]] bool EnqueueAsyncE2c(Core::System& system, const u64* call_payload);
+    void BackE2cConditionAsync(Core::System& system, GPUVAddr source, u32 p0, u32 front_value,
+                               bool verify, u32 override_val, u64 seq);
+    bool TrySyncAsyncE2c() noexcept;
+    void WaitAndSyncAsyncE2c();
+    void SyncAsyncE2cFromJoin() noexcept;
+
     VideoCore::RasterizerInterface& Rasterizer() {
         return *rasterizer;
     }
@@ -3487,6 +3504,7 @@ private:
     /// CallMethodFast for a state register (not in execution_mask): a write of the value the
     /// register holds changes nothing (EDEN_NX2_SKIP_SAME=0 keeps it).
     void WriteStateRegister(u32 method, u32 method_argument) {
+        SyncE2cForMethod(method);
         const u32 argument = ProcessShadowRam(method, method_argument);
         if (!SkipSameValueWrites() || regs.reg_array[method] != argument) {
             ProcessDirtyRegisters(method, argument);
@@ -3742,6 +3760,23 @@ private:
     /// E's half of it (StageCall::E2cCondition).
     void BackE2cCondition(Core::System& system, GPUVAddr source, u32 p0, u32 front_value,
                           bool verify);
+    u32 EvaluateE2cMode(GPUVAddr source, u32 p0, u32 front_value, bool verify);
+    void ApplyAsyncE2cMode(u32 mode, bool exec_on, u64 seq) noexcept;
+    void SyncE2cForMethod(u32 method) {
+        if (HasPendingAsyncE2c() &&
+            (method == MAXWELL3D_REG_INDEX(render_enable.mode) ||
+             method == MAXWELL3D_REG_INDEX(render_enable_override) ||
+             method == MAXWELL3D_REG_INDEX(shadow_ram_control))) [[unlikely]] {
+            WaitAndSyncAsyncE2c();
+        }
+    }
+
+    u64 e2c_async_posted_seq{};
+    u64 e2c_async_sync_seq{};
+    std::atomic<u64> e2c_async_done_seq{};
+    std::atomic<u32> e2c_async_done_mode{1};
+    std::atomic<bool> e2c_async_done_execute{true};
+    bool e2c_e2_execute_on{true};
     /// The front's copy of render_enable.mode (and its shadow RAM word) is unknown after a
     /// deferred 0xe2c until written again: fetched from E when something reads it.
     void FrontResolveE2cMode(VideoCommon::GpuSplit& split, FrontState& state);

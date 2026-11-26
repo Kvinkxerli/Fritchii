@@ -2640,7 +2640,8 @@ bool NextIsHardClosure(u64 position, size_t size) {
     }
     const u64 head = Access::Ring()[next & Access::RingMask];
     return static_cast<Kind>(head & 0xf) == Kind::Call &&
-           (StageTagOf(head) == StageTag::Cache || StageTagOf(head) == StageTag::Level);
+           (StageTagOf(head) == StageTag::Cache || StageTagOf(head) == StageTag::Level ||
+            StageTagOf(head) == StageTag::E2c);
 }
 
 void StageGather(State& s, Copy& c, u32 method) {
@@ -3244,6 +3245,7 @@ size_t Process(State& s, u64 position, bool executed) {
         const u64* const words = entry + 2;
         switch (StageTagOf(head)) {
         case StageTag::Level:
+        case StageTag::E2c:
             Unfollow(s, LevelType::Call, Rva(entry[1]));
             break;
         case StageTag::Pass:

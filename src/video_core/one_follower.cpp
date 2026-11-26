@@ -1866,6 +1866,10 @@ void SetNextDraw(u32 kind, bool indexed, bool indirect, u32 instance_arg) noexce
     t_next_draw_set = true;
 }
 
+void ClearNextDraw() noexcept {
+    t_next_draw_set = false;
+}
+
 namespace {
 void PushPacked(PacketHeader& header, u8* buffer, std::size_t body_bytes);
 void SendCarriedAlone(size_t why);

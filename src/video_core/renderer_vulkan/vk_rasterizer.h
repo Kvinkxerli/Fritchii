@@ -243,6 +243,7 @@ private:
     /// E: a render enable that can begin host conditional rendering was lent (sticks). While
     /// false, FRITCHII_ONEF_QUERY_OPS sends no override/True/False render enable.
     bool onef_condition_may_be_set{};
+    [[nodiscard]] bool MayEndConditionalRendering() const noexcept override;
     /// R: inside a posted clear (FRITCHII_ONEF_OP_CLEAR): E ran its FlushCaching.
     bool onef_clear_posted{};
     /// E: an unlent list draw with a keep id was pushed since R was last drained: R records its
