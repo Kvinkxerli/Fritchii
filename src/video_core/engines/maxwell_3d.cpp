@@ -5534,6 +5534,9 @@ void Maxwell3D::BackE2cConditionAsync(Core::System& system, GPUVAddr source, u32
 }
 
 void Maxwell3D::ApplyAsyncE2cMode(u32 mode, bool exec_on, u64 seq) noexcept {
+    // Mark seq as synced before DrawDeferred, otherwise DrawEnd -> TrySyncAsyncE2c() recurses
+    // infinitely while draw_state.draw_mode is still Instance.
+    e2c_async_sync_seq = seq;
     constexpr u32 method = MAXWELL3D_REG_INDEX(render_enable.mode);
     const u32 arg = ProcessShadowRam(method, mode);
     if (draw_manager.HasDeferredDraw()) [[unlikely]] {
@@ -5548,7 +5551,6 @@ void Maxwell3D::ApplyAsyncE2cMode(u32 mode, bool exec_on, u64 seq) noexcept {
         VideoCommon::OneFollower::NoteRegWrite(method);
     }
     execute_on = exec_on;
-    e2c_async_sync_seq = seq;
 }
 
 bool Maxwell3D::TrySyncAsyncE2c() noexcept {

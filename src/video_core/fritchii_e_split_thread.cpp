@@ -1652,8 +1652,10 @@ void QueueRasterOpImpl(RasterOp op, VideoCore::RasterizerInterface& rasterizer, 
         g_mirror_reset(&rasterizer);
     }
     // FRITCHII_ESPLIT_OWED: a report lands at `address` (16 bytes at most): on a shader page the
-    // next lookup drains and flushes first.
-    if (op == RasterOp::Query && g_owed_shader_rule) {
+    // next lookup drains and flushes first. ZPassPixelCount64 queues a host GPU report op to R
+    // without writing guest memory on E2.
+    if (op == RasterOp::Query && g_owed_shader_rule &&
+        a != static_cast<u32>(VideoCommon::QueryType::ZPassPixelCount64)) {
         if (Maxwell3D* const engine = OneF::Engine()) {
             NoteQueuedWrite(&engine->GetMemoryManager(), address, 16);
         }

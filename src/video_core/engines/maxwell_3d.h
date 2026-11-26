@@ -3329,10 +3329,21 @@ public:
     void WaitAndSyncAsyncE2c();
     void SyncAsyncE2cFromJoin() noexcept;
     void SyncE2cForMethod(u32 method) {
-        if (HasPendingAsyncE2c() &&
-            (method == MAXWELL3D_REG_INDEX(render_enable.mode) ||
-             method == MAXWELL3D_REG_INDEX(render_enable_override) ||
-             method == MAXWELL3D_REG_INDEX(shadow_ram_control))) [[unlikely]] {
+        if (!HasPendingAsyncE2c()) [[likely]] {
+            return;
+        }
+        if (method == MAXWELL3D_REG_INDEX(render_enable.mode)) {
+            if (shadow_state.shadow_ram_control != Regs::ShadowRamControl::Replay) {
+                // Overwriting render_enable.mode supersedes the pending E2c result for future
+                // draws; prior AsyncTail jobs on E2 already captured e2c_seq and run in order.
+                e2c_async_sync_seq = e2c_async_posted_seq;
+                return;
+            }
+            WaitAndSyncAsyncE2c();
+            return;
+        }
+        if (method == MAXWELL3D_REG_INDEX(render_enable_override) ||
+            method == MAXWELL3D_REG_INDEX(shadow_ram_control)) {
             WaitAndSyncAsyncE2c();
         }
     }

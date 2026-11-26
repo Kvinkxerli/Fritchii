@@ -4905,6 +4905,21 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                 have_low = false;
                 linear = true;
             }
+            void SyncFromEngine(const Tegra::Engines::KeplerCompute* kc) noexcept {
+                if (kc == nullptr) {
+                    Reset();
+                    return;
+                }
+                engine = kc;
+                line_length_in = kc->regs.upload.line_length_in;
+                line_count = kc->regs.upload.line_count;
+                pitch = kc->regs.upload.dest.pitch;
+                addr_high = kc->regs.upload.dest.address_high;
+                addr_low = kc->regs.upload.dest.address_low;
+                have_high = true;
+                have_low = true;
+                linear = kc->regs.exec_upload.linear != 0;
+            }
             void NoteReg(const Tegra::Engines::EngineInterface* e, u32 m, u32 val) noexcept {
                 if (e != engine) {
                     Reset();
@@ -5145,7 +5160,13 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                     kind == Kind::Call ? reinterpret_cast<const void*>(entry[1]) : nullptr);
             }
             const ESplit::JoinScope join{ESplit::Join::Entry, info.cls == ESplit::Class::Join};
-            return Execute(entry, words);
+            const size_t executed = Execute(entry, words);
+            if (info.cls == ESplit::Class::Join && ESplit::g_async &&
+                ESplit::KindOf(back_engine) == ESplit::EngineKind::Compute) {
+                compute_upload.SyncFromEngine(
+                    static_cast<const Tegra::Engines::KeplerCompute*>(back_engine));
+            }
+            return executed;
         };
         // FRITCHII_ESPLIT_DEPTH > 0: `consumed` is stored at E2's place, by an async job (the
         // front's waits and ring A's room follow E2). False: store it here.
