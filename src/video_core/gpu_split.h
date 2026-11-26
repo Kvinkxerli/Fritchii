@@ -1801,6 +1801,7 @@ private:
     friend struct GpuSplitTestAccess;
     friend struct MemStageShadowAccess; // memstage_shadow.cpp reads the ring's layout
     friend struct MemoryStageRingAccess; // memory_stage_link.cpp: the stage's cursors
+    friend struct ESplitEngineAccess;    // fritchii_e_split_thread.cpp: batched non-3D engine execution
 
     enum class Kind : u64 {
         Wrap,   ///< The rest of the ring is unused: continue at its start

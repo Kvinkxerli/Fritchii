@@ -117,6 +117,15 @@
 #include "video_core/one_follower.h"
 #include "video_core/rasterizer_interface.h"
 
+namespace VideoCommon {
+struct ESplitEngineAccess {
+    static size_t ExecuteOnEngine(GpuSplit& split, Tegra::Engines::EngineInterface* engine,
+                                  const u64* entry) {
+        return split.ExecuteOnEngine(engine, entry);
+    }
+};
+} // namespace VideoCommon
+
 namespace VideoCommon::ESplit {
 
 namespace {
@@ -1037,7 +1046,7 @@ void RunEngineBatch(void* raw) {
     std::memcpy(&b, raw, sizeof(b));
     const u64* entry = b.entry;
     for (u32 i = 0; i < b.count; ++i) {
-        entry += b.self->ExecuteOnEngine(b.engine, entry);
+        entry += ESplitEngineAccess::ExecuteOnEngine(*b.self, b.engine, entry);
     }
 }
 
@@ -2419,7 +2428,7 @@ void QueueEngineEntry(VideoCommon::GpuSplit& split, Tegra::Engines::EngineInterf
         return;
     }
     if (!g_async || t_role != 1 || t_join != 0) {
-        (void)split.ExecuteOnEngine(engine, entry);
+        (void)ESplitEngineAccess::ExecuteOnEngine(split, engine, entry);
         return;
     }
     if (g_eng_open != nullptr && g_eng_split == &split && g_eng_engine == engine &&
