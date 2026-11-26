@@ -166,7 +166,7 @@ struct Nx2VideoDecoder::Impl {
     bool Open(bool use_gpu) {
         context.reset();
         hardware.reset();
-        decoder = std::make_unique<FFmpeg::Decoder>(*codec);
+        decoder = std::make_unique<FFmpeg::Decoder>(*codec, use_gpu);
         using_hardware = false;
         received_any = false;
         hardware_failures = 0;
@@ -181,9 +181,18 @@ struct Nx2VideoDecoder::Impl {
             hardware = std::make_unique<FFmpeg::HardwareContext>();
             using_hardware = hardware->InitializeForDecoder(*context, *decoder);
             if (!using_hardware) {
-                // No GPU decoder for this codec (libdav1d has none): the same context decodes
-                // on the CPU.
+                // No GPU decoder for this codec/device: fall back to the default CPU decoder
+                // (e.g. libdav1d for AV1 when hardware AV1 was probed).
                 hardware.reset();
+                if (*codec == NvdecCommon::VideoCodec::AV1) {
+                    context.reset();
+                    decoder = std::make_unique<FFmpeg::Decoder>(*codec, false);
+                    if (decoder->GetCodec() == nullptr) {
+                        LOG_ERROR(HW_GPU, "nx2 video: FFmpeg has no decoder for \"{}\"", name);
+                        return false;
+                    }
+                    context = std::make_unique<FFmpeg::DecoderContext>(*decoder);
+                }
             }
         }
         bool opened = false;

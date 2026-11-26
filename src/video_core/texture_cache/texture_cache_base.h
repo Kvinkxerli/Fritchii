@@ -1581,6 +1581,8 @@ private:
 
     /// FRITCHII_VRAM_BUDGET_MODE: the base thresholds lowered to budget_cap (no-op at ~0).
     void ApplyBudgetCap();
+    /// Small cards (< 5 GiB): keeps an active image floor above non-image VRAM in expected/critical.
+    void ApplySmallCardImageFloor(u64 budget, bool log = false);
     /// FRITCHII_VRAM_BUDGET_MODE (live): once a second, the driver's usage of the main heap
     /// against the budget (vk: the driver's; os: also the heap less what other processes hold)
     /// less FRITCHII_VRAM_HEADROOM_MIB; past it the cap comes down, with room it goes back up.

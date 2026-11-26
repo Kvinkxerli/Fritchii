@@ -4794,8 +4794,9 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
             case Kind::StateDelta:
             case Kind::DrawBatch:
                 // Register writes and the draws they end (whose fills are carved out as E2's).
-                // A compute engine's registers are E2's with the rest of it.
-                if (ESplit::KindOf(back_engine) == EngineKind::Compute) {
+                // Compute and 2D/DMA/inline engines' registers are E2's with the rest of them.
+                if (const EngineKind engine_kind = ESplit::KindOf(back_engine);
+                    engine_kind == EngineKind::Compute || engine_kind == EngineKind::Other) {
                     info.cls = Class::E2;
                 }
                 break;
@@ -4825,8 +4826,8 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
             case Kind::Method:
             case Kind::Multi: {
                 const EngineKind engine_kind = ESplit::KindOf(back_engine);
-                if (engine_kind == EngineKind::Compute) {
-                    info.cls = Class::E2; // forwarded whole (dispatches, QMD reads, its fences)
+                if (engine_kind == EngineKind::Compute || engine_kind == EngineKind::Other) {
+                    info.cls = Class::E2; // forwarded whole (compute, 2D, DMA, inline-to-memory)
                     break;
                 }
                 const u32 method = static_cast<u32>((head >> 8) & 0xffff);
@@ -4837,7 +4838,7 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                                                !back_engine->execution_mask[method]));
                 if (engine_kind != EngineKind::Maxwell3D) {
                     if (!store) {
-                        join(JoinCause::OtherEngine); // 2D, DMA, inline-to-memory
+                        join(JoinCause::OtherEngine);
                     }
                     break;
                 }
@@ -4920,19 +4921,33 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                     });
                     return size;
                 }
-                // Bit 2: a compute engine entry goes to E2 whole, the engine by value.
-                if (!cb_on_e1 && engine_kind == ESplit::EngineKind::Compute &&
+                // Bit 2: a compute or 2D/DMA/inline engine entry goes to E2 whole, the engine by value.
+                if (!cb_on_e1 &&
+                    (engine_kind == ESplit::EngineKind::Compute ||
+                     engine_kind == ESplit::EngineKind::Other) &&
                     (kind == Kind::Method || kind == Kind::Multi || kind == Kind::Pairs) &&
                     ESplit::QueueKind(ESplit::KindCompute)) {
                     const size_t size = PlainEntrySize(head);
-                    // FRITCHII_ESPLIT_OWED: a compute upload's destination is in E2's registers:
-                    // counted as a write anywhere (the next lookup drains and flushes first).
+                    // FRITCHII_ESPLIT_OWED: an upload or 2D/DMA/inline write may touch GPU/guest
+                    // memory anywhere: counted so the next lookup drains and flushes first.
                     if (ESplit::g_owed_shader_rule) {
-                        const u32 compute_method = static_cast<u32>((head >> 8) & 0xffff);
-                        using Tegra::Engines::KeplerCompute;
-                        if (compute_method == KEPLER_COMPUTE_REG_INDEX(exec_upload) ||
-                            compute_method == KEPLER_COMPUTE_REG_INDEX(data_upload)) {
-                            ESplit::NoteQueuedWriteAnywhere();
+                        if (engine_kind == ESplit::EngineKind::Compute) {
+                            const u32 compute_method = static_cast<u32>((head >> 8) & 0xffff);
+                            using Tegra::Engines::KeplerCompute;
+                            if (compute_method == KEPLER_COMPUTE_REG_INDEX(exec_upload) ||
+                                compute_method == KEPLER_COMPUTE_REG_INDEX(data_upload)) {
+                                ESplit::NoteQueuedWriteAnywhere();
+                            }
+                        } else {
+                            const u32 other_method = static_cast<u32>((head >> 8) & 0xffff);
+                            const bool store =
+                                kind == Kind::Method &&
+                                ((head & Sink) != 0 ||
+                                 ((head & Direct) == 0 && back_engine != nullptr &&
+                                  !back_engine->execution_mask[other_method]));
+                            if (!store) {
+                                ESplit::NoteQueuedWriteAnywhere();
+                            }
                         }
                     }
                     struct EngineJob {

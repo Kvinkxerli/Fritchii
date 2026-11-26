@@ -3,6 +3,8 @@
 
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <array>
 #include <cstring>
 #include <string_view>
 #include <vector>
@@ -51,6 +53,23 @@ constexpr std::array PreferredGpuDecoders = {
 #endif
     AV_HWDEVICE_TYPE_VULKAN,
 };
+
+bool HasHardwareConfig(const AVCodec* codec) {
+    if (!codec) {
+        return false;
+    }
+    for (int i = 0;; i++) {
+        const AVCodecHWConfig* config = avcodec_get_hw_config(codec, i);
+        if (!config) {
+            return false;
+        }
+        if ((config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) != 0 &&
+            std::ranges::find(PreferredGpuDecoders, config->device_type) !=
+                PreferredGpuDecoders.end()) {
+            return true;
+        }
+    }
+}
 
 AVPixelFormat GetGpuFormat(AVCodecContext* codec_context, const AVPixelFormat* pix_fmts) {
     // The hardware format of the device the context was given, when the decoder offers it for
@@ -165,7 +184,7 @@ Frame::~Frame() {
     av_frame_free(&m_frame);
 }
 
-Decoder::Decoder(Tegra::Host1x::NvdecCommon::VideoCodec codec) {
+Decoder::Decoder(Tegra::Host1x::NvdecCommon::VideoCodec codec, bool prefer_hw_av1) {
     const AVCodecID av_codec = [&] {
         switch (codec) {
         case Tegra::Host1x::NvdecCommon::VideoCodec::H264:
@@ -197,6 +216,18 @@ Decoder::Decoder(Tegra::Host1x::NvdecCommon::VideoCodec codec) {
         }
     }
 #endif
+    if (!m_codec && prefer_hw_av1 && av_codec == AV_CODEC_ID_AV1 &&
+        Settings::values.nvdec_emulation.GetValue() == Settings::NvdecEmulation::Gpu) {
+        // avcodec_find_decoder(AV_CODEC_ID_AV1) prefers libdav1d (CPU only); try hardware-capable
+        // AV1 decoders first when GPU NVDEC emulation is enabled.
+        for (const char* name : {"av1_cuvid", "av1"}) {
+            if (const AVCodec* hw_codec = avcodec_find_decoder_by_name(name);
+                HasHardwareConfig(hw_codec)) {
+                m_codec = hw_codec;
+                break;
+            }
+        }
+    }
     if (!m_codec) {
         m_codec = avcodec_find_decoder(av_codec);
     }

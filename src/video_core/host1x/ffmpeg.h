@@ -132,7 +132,7 @@ public:
     YUZU_NON_COPYABLE(Decoder);
     YUZU_NON_MOVEABLE(Decoder);
 
-    explicit Decoder(Tegra::Host1x::NvdecCommon::VideoCodec codec);
+    explicit Decoder(Tegra::Host1x::NvdecCommon::VideoCodec codec, bool prefer_hw_av1 = true);
     ~Decoder() = default;
 
     bool SupportsDecodingOnDevice(AVPixelFormat* out_pix_fmt, AVHWDeviceType type) const;

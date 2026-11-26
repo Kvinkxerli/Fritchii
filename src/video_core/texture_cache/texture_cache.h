@@ -1367,6 +1367,44 @@ void TextureCache<P>::ApplyBudgetCap() {
 }
 
 template <class P>
+void TextureCache<P>::ApplySmallCardImageFloor(u64 budget, bool log) {
+    // Small cards (< 5 GiB): leave images a floor over non-image VRAM so the
+    // collector does not thrash downloading and re-transcoding active textures.
+    static const std::optional<u64> forced_floor = []() -> std::optional<u64> {
+        const char* value = std::getenv("EDEN_NX2_TC_IMAGE_FLOOR_MIB");
+        return value != nullptr
+                   ? std::optional<u64>{std::strtoull(value, nullptr, 10) << 20}
+                   : std::nullopt;
+    }();
+    const u64 image_floor =
+        forced_floor.value_or(budget < 5_GiB ? (std::min)(budget / 2, u64{1536_MiB}) : u64{0});
+    if (image_floor == 0) {
+        return;
+    }
+    u64 image_bytes{};
+    for (const auto [image_id, image] : slot_images) {
+        image_bytes += ImageMemoryBytes(*image);
+    }
+    const u64 other = total_used_memory - (std::min)(total_used_memory, image_bytes);
+    const u64 floor_expected = other + image_floor;
+    if (floor_expected > expected_memory) {
+        if (log) {
+            static bool image_floor_logged{};
+            if (!image_floor_logged) {
+                image_floor_logged = true;
+                LOG_INFO(HW_GPU,
+                         "Texture cache image floor: {} MiB in use is not images, "
+                         "images get {} MiB (expected {} -> {} MiB)",
+                         other >> 20, image_floor >> 20, expected_memory >> 20,
+                         floor_expected >> 20);
+            }
+        }
+        expected_memory = floor_expected;
+        critical_memory = (std::max)(critical_memory, floor_expected + image_floor / 4);
+    }
+}
+
+template <class P>
 void TextureCache<P>::BudgetControl() {
     // FRITCHII_VRAM_BUDGET_MODE (live; 0 fixed, 1 vk = default, 2 os). The thresholds above follow
     // the budget only as far as Fritchii's ceiling (EDEN_NX2_TC_CEILING_MIB, 7680) and the 5/8 cap
@@ -1468,7 +1506,9 @@ void TextureCache<P>::BudgetControl() {
             runtime.SetBudgetPressure(budget_pressure);
         }
         ApplyBudgetCap();
-        if (budget > 2_GiB && budget < 5_GiB && usage <= budget) {
+        if (!budget_pressure && budget > 2_GiB) {
+            ApplySmallCardImageFloor(budget, false);
+        } else if (budget > 2_GiB && budget < 5_GiB && usage <= budget) {
             u64 live_image_bytes{};
             for (const auto [image_id, image] : slot_images) {
                 if (False(image->flags & ImageFlagBits::Unbacked)) {
@@ -1998,38 +2038,7 @@ void TextureCache<P>::TickFrame() {
                     critical_memory = (std::min)(critical_memory, host_critical);
                     expected_memory = critical_memory - (std::min)(margin, critical_memory / 2);
                     ApplyThresholdOverrides(false);
-                    // Small cards (< 5 GiB): leave images a floor over non-image VRAM so the
-                    // collector does not thrash downloading and re-transcoding active textures.
-                    static const std::optional<u64> forced_floor = []() -> std::optional<u64> {
-                        const char* value = std::getenv("EDEN_NX2_TC_IMAGE_FLOOR_MIB");
-                        return value != nullptr
-                                   ? std::optional<u64>{std::strtoull(value, nullptr, 10) << 20}
-                                   : std::nullopt;
-                    }();
-                    const u64 image_floor = forced_floor.value_or(
-                        budget < 5_GiB ? (std::min)(budget / 2, u64{1536_MiB}) : u64{0});
-                    if (image_floor != 0) {
-                        u64 image_bytes{};
-                        for (const auto [image_id, image] : slot_images) {
-                            image_bytes += ImageMemoryBytes(*image);
-                        }
-                        const u64 other = total_used_memory - (std::min)(total_used_memory, image_bytes);
-                        const u64 floor_expected = other + image_floor;
-                        if (floor_expected > expected_memory) {
-                            static bool image_floor_logged{};
-                            if (!image_floor_logged) {
-                                image_floor_logged = true;
-                                LOG_INFO(HW_GPU,
-                                         "Texture cache image floor: {} MiB in use is not images, "
-                                         "images get {} MiB (expected {} -> {} MiB)",
-                                         other >> 20, image_floor >> 20, expected_memory >> 20,
-                                         floor_expected >> 20);
-                            }
-                            expected_memory = floor_expected;
-                            critical_memory =
-                                (std::max)(critical_memory, floor_expected + image_floor / 4);
-                        }
-                    }
+                    ApplySmallCardImageFloor(budget, true);
                     // FRITCHII_KEEP_BLOCKS: the kept blocks get what the live usage leaves under
                     // the critical use and half the room above it.
                     if constexpr (requires { runtime.LimitKeptBlocks(u64{}, u64{}); }) {
