@@ -3328,6 +3328,14 @@ public:
     bool TrySyncAsyncE2c() noexcept;
     void WaitAndSyncAsyncE2c();
     void SyncAsyncE2cFromJoin() noexcept;
+    void SyncE2cForMethod(u32 method) {
+        if (HasPendingAsyncE2c() &&
+            (method == MAXWELL3D_REG_INDEX(render_enable.mode) ||
+             method == MAXWELL3D_REG_INDEX(render_enable_override) ||
+             method == MAXWELL3D_REG_INDEX(shadow_ram_control))) [[unlikely]] {
+            WaitAndSyncAsyncE2c();
+        }
+    }
 
     VideoCore::RasterizerInterface& Rasterizer() {
         return *rasterizer;
@@ -3762,14 +3770,6 @@ private:
                           bool verify);
     u32 EvaluateE2cMode(GPUVAddr source, u32 p0, u32 front_value, bool verify);
     void ApplyAsyncE2cMode(u32 mode, bool exec_on, u64 seq) noexcept;
-    void SyncE2cForMethod(u32 method) {
-        if (HasPendingAsyncE2c() &&
-            (method == MAXWELL3D_REG_INDEX(render_enable.mode) ||
-             method == MAXWELL3D_REG_INDEX(render_enable_override) ||
-             method == MAXWELL3D_REG_INDEX(shadow_ram_control))) [[unlikely]] {
-            WaitAndSyncAsyncE2c();
-        }
-    }
 
     u64 e2c_async_posted_seq{};
     u64 e2c_async_sync_seq{};
