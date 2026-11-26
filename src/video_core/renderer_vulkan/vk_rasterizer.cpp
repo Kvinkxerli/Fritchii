@@ -7423,7 +7423,7 @@ VideoCore::RasterizerDownloadArea RasterizerVulkan::GetFlushArea(DAddr addr, u64
     bool image_eligible = false;
     if (image_mode != 0 && image_block && size != 0) {
         if (VideoCore::Nx2Debug::Experiment(36) != 0 ||
-            VideoCore::Nx2Debug::Experiment(81) != 0 ||
+            (VideoCore::Nx2Debug::Experiment(81) != 0 && gpu_written && mirror_mode != 1) ||
             VideoCore::Nx2Debug::Experiment(43) == 4) { // tombstone check needs the lock
             g_guest_access.image_excluded.fetch_add(1, std::memory_order_relaxed);
         } else if (texture_cache.sparse_page_filter.Any(addr, size)) {

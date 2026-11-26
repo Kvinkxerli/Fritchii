@@ -45,7 +45,8 @@ enum Part : u32 {
     /// buffers held 50 blocks, 800 MiB, a block staying while any buffer in it lives.
     BufferPoolBlocks = 1U << 5,
 };
-inline constexpr u32 DefaultParts = Fit | Pool | BufferBlocks | RefuseScale | BufferPoolBlocks;
+inline constexpr u32 DefaultParts =
+    Fit | Pool | BufferBlocks | RefuseScale | Stream | BufferPoolBlocks;
 
 /// Auto mode's limits.
 inline constexpr u64 AutoHeapBytes = u64{9} << 30;

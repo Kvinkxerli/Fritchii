@@ -328,6 +328,7 @@ constexpr std::pair<const char*, const char*> BuiltinSwitches[] = {
     {"FRITCHII_MEMSTAGE_TICKS", "1"},
     {"FRITCHII_STAMP_READ_PAGES", "2"},
     {"FRITCHII_LIST_COPY_SKIP", "1"},
+    {"FRITCHII_LAGGED_DEFER", "1"},
     {"FRITCHII_DISPATCH_WALK_SUMMARY", "1"},
     {"FRITCHII_FRONT_CALL_LEAN", "1"},
     {"FRITCHII_FRONT_LIST_LANE", "3"},

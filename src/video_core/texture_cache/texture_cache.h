@@ -221,7 +221,8 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
             stats.over_extra += extra;
             stats.over_peak = (std::max)(stats.over_peak, over);
             if (over >= 1_GiB) {
-                ticks_to_destroy = (std::max)(min_age, u64{3});
+                ticks_to_destroy =
+                    (std::max)(min_age, Common::HostHasSmallVideoMemory() ? u64{12} : u64{3});
                 ++stats.over_young;
             }
         }
@@ -1381,13 +1382,22 @@ void TextureCache<P>::ApplySmallCardImageFloor(u64 budget, bool log) {
     if (image_floor == 0) {
         return;
     }
+    if (!forced_floor && budget_pressure) {
+        return;
+    }
+    const u64 margin_cap =
+        budget > 2_GiB ? budget - SmallCardMargin(budget) : (std::numeric_limits<u64>::max)();
+    const u64 cap = (std::min)(budget_cap, margin_cap);
     u64 image_bytes{};
     for (const auto [image_id, image] : slot_images) {
         image_bytes += ImageMemoryBytes(*image);
     }
     const u64 other = total_used_memory - (std::min)(total_used_memory, image_bytes);
     const u64 floor_expected = other + image_floor;
-    if (floor_expected > expected_memory) {
+    const u64 clamped_critical = (std::min)(floor_expected + image_floor / 4, cap);
+    const u64 clamped_expected =
+        (std::min)(floor_expected, clamped_critical - (std::min)(clamped_critical, u64{192_MiB}));
+    if (clamped_expected > expected_memory) {
         if (log) {
             static bool image_floor_logged{};
             if (!image_floor_logged) {
@@ -1396,11 +1406,11 @@ void TextureCache<P>::ApplySmallCardImageFloor(u64 budget, bool log) {
                          "Texture cache image floor: {} MiB in use is not images, "
                          "images get {} MiB (expected {} -> {} MiB)",
                          other >> 20, image_floor >> 20, expected_memory >> 20,
-                         floor_expected >> 20);
+                         clamped_expected >> 20);
             }
         }
-        expected_memory = floor_expected;
-        critical_memory = (std::max)(critical_memory, floor_expected + image_floor / 4);
+        expected_memory = clamped_expected;
+        critical_memory = (std::max)(critical_memory, clamped_critical);
     }
 }
 
@@ -1510,7 +1520,7 @@ void TextureCache<P>::BudgetControl() {
         ApplyBudgetCap();
         if (!budget_pressure && budget > 2_GiB) {
             ApplySmallCardImageFloor(budget, false);
-        } else if (budget > 2_GiB && budget < 5_GiB && usage <= budget) {
+        } else if (budget > 2_GiB && budget < 5_GiB && usage <= target) {
             u64 live_image_bytes{};
             for (const auto [image_id, image] : slot_images) {
                 if (False(image->flags & ImageFlagBits::Unbacked)) {
@@ -1519,11 +1529,15 @@ void TextureCache<P>::BudgetControl() {
             }
             const u64 other = total_used_memory - (std::min)(total_used_memory, live_image_bytes);
             const u64 small_img_floor = (std::min)(budget / 3, u64{1024_MiB});
-            const u64 cap_expected = (std::min)(other + small_img_floor,
-                                                base_expected_memory);
+            const u64 ceiling = budget_cap < ~0ULL ? (std::min)(budget_cap, target) : target;
+            const u64 cap_critical = (std::min)(other + small_img_floor + 192_MiB, ceiling);
+            const u64 cap_expected =
+                (std::min)(other + small_img_floor,
+                           (std::min)(base_expected_memory,
+                                      cap_critical - (std::min)(cap_critical, u64{192_MiB})));
             if (expected_memory < cap_expected) {
                 expected_memory = cap_expected;
-                critical_memory = (std::max)(critical_memory, expected_memory + 192_MiB);
+                critical_memory = (std::max)(critical_memory, cap_critical);
             }
         }
         const u64 change = budget_cap > old_cap ? budget_cap - old_cap : old_cap - budget_cap;
@@ -1610,7 +1624,7 @@ void TextureCache<P>::EnforceCriticalAtCreate(u64 incoming) {
     auto& candidates = create_enforce_candidates;
     candidates.clear();
     const u64 emergency_age =
-        (small_card && total_used_memory > critical_memory + 512_MiB) ? u64{4} : u64{10};
+        (small_card && total_used_memory > critical_memory + 512_MiB) ? u64{16} : u64{10};
     const u64 min_idle = (std::max)(emergency_age, min_age);
     size_t looked = 0;
     const auto collect_candidates = [&](u64 floor_frames) {
@@ -1619,10 +1633,12 @@ void TextureCache<P>::EnforceCriticalAtCreate(u64 incoming) {
         if (frame_tick <= floor_frames) {
             return;
         }
+        const bool allow_costly = floor_frames >= 30;
         lru_cache.ForEachItemBelow(frame_tick - floor_frames, [&](ImageId image_id) {
             const Image& image = slot_images[image_id];
             if (False(image.flags & (ImageFlagBits::IsDecoding | ImageFlagBits::CollectPending |
                                      ImageFlagBits::GpuModified | ImageFlagBits::BadOverlap)) &&
+                (allow_costly || False(image.flags & ImageFlagBits::CostlyLoad)) &&
                 std::ranges::find(bound, image_id) == bound.end()) {
                 candidates.push_back(image_id);
             }
@@ -1631,9 +1647,13 @@ void TextureCache<P>::EnforceCriticalAtCreate(u64 incoming) {
     };
     collect_candidates(idle_frames);
     if (candidates.empty() && idle_frames > min_idle) {
-        // ThrashGuard's floor locked out evictions while VRAM is already past critical; fall back
-        // to min_idle and relax thrash_floor so subsequent frames don't stall for 0 MiB freed.
-        collect_candidates(min_idle);
+        // ThrashGuard's floor locked out evictions while VRAM is already past critical; step down
+        // gradually before falling back to min_idle so active scene textures aren't wiped at once.
+        const u64 fallback_idle = (std::max)(min_idle, idle_frames / 2);
+        collect_candidates(fallback_idle);
+        if (candidates.empty() && fallback_idle > min_idle) {
+            collect_candidates(min_idle);
+        }
         if (thrash_floor > min_idle) {
             thrash_floor /= 2;
         }
@@ -2040,7 +2060,9 @@ void TextureCache<P>::TickFrame() {
                     critical_memory = (std::min)(critical_memory, host_critical);
                     expected_memory = critical_memory - (std::min)(margin, critical_memory / 2);
                     ApplyThresholdOverrides(false);
-                    ApplySmallCardImageFloor(budget, true);
+                    if (!budget_pressure) {
+                        ApplySmallCardImageFloor(budget, true);
+                    }
                     // FRITCHII_KEEP_BLOCKS: the kept blocks get what the live usage leaves under
                     // the critical use and half the room above it.
                     if constexpr (requires { runtime.LimitKeptBlocks(u64{}, u64{}); }) {
@@ -8137,37 +8159,11 @@ void TextureCache<P>::CensusTickFrame() {
 }
 
 template <class P>
-ImageViewId TextureCache<P>::FindColorBuffer(size_t index) {
+void TextureCache<P>::ApplyClearExactSize(ImageInfo& info, GPUVAddr gpu_addr, bool want_exact) {
     const auto& regs = maxwell3d->regs;
-    if (index >= regs.rt_control.count) {
-        return ImageViewId{};
-    }
-    const auto& rt = regs.rt[index];
-    const GPUVAddr gpu_addr = rt.Address();
-    if (gpu_addr == 0) {
-        return ImageViewId{};
-    }
-    if (rt.format == Tegra::RenderTargetFormat::NONE) {
-        return ImageViewId{};
-    }
-    const ImageInfo info(regs.rt[index], regs.anti_alias_samples_mode);
-    return FindRenderTargetView(info, gpu_addr);
-}
-
-template <class P>
-ImageViewId TextureCache<P>::FindDepthBuffer() {
-    const auto& regs = maxwell3d->regs;
-    if (!regs.zeta_enable) {
-        return ImageViewId{};
-    }
-    const GPUVAddr gpu_addr = regs.zeta.Address();
-    if (gpu_addr == 0) {
-        return ImageViewId{};
-    }
-    ImageInfo info(regs.zeta, regs.zeta_size, regs.anti_alias_samples_mode);
     if (!clearing_render_targets && !clear_exact_pending.empty()) {
-        // EXP68 bit 1 check: the first depth bind at an address after its clear uses the exact
-        // size the clear went to (several NPC targets are cleared before their draws).
+        // EXP68 bit 1 check: the first bind at an address after its clear uses the exact
+        // size the clear went to (NPC depth targets and padded color targets).
         if (const auto it = clear_exact_pending.find(gpu_addr); it != clear_exact_pending.end()) {
             if (info.size.width == it->second.first && info.size.height == it->second.second) {
                 ++clear_exact_confirmed;
@@ -8183,13 +8179,12 @@ ImageViewId TextureCache<P>::FindDepthBuffer() {
             clear_exact_pending.erase(it);
         }
     }
-    if (clearing_render_targets && (VideoCore::Nx2Debug::Experiment(68) & 1) != 0 &&
-        regs.clear_surface.Z && regs.clear_control.use_scissor != 0 &&
-        info.type == ImageType::e2D && info.resources.levels == 1 && info.resources.layers == 1 &&
-        info.num_samples == 1 && !clear_exact_unsafe.contains(gpu_addr)) {
-        // The game clears the per-NPC depth target with the width register rounded up to 16 and
-        // a scissor of the real square, then draws into the real square: two images a frame
-        // with an upload and alias copies between them (fable52_answer_npcdips 1).
+    if (clearing_render_targets && want_exact && (VideoCore::Nx2Debug::Experiment(68) & 1) != 0 &&
+        regs.clear_control.use_scissor != 0 && info.type == ImageType::e2D &&
+        info.resources.levels == 1 && info.resources.layers == 1 && info.num_samples == 1 &&
+        !clear_exact_unsafe.contains(gpu_addr)) {
+        // Padded render target width rounded up to 16 with a scissor of the real width (e.g.
+        // 1376->1366, 688->683, per-NPC depth targets): go to the exact size draws/textures use.
         const auto& scissor = regs.scissor_test[0];
         const u32 bytes = VideoCore::Surface::BytesPerBlock(info.format);
         const u32 scissor_width = scissor.max_x;
@@ -8202,6 +8197,42 @@ ImageViewId TextureCache<P>::FindDepthBuffer() {
             ++clear_exact_used;
         }
     }
+}
+
+template <class P>
+ImageViewId TextureCache<P>::FindColorBuffer(size_t index) {
+    const auto& regs = maxwell3d->regs;
+    if (index >= regs.rt_control.count) {
+        return ImageViewId{};
+    }
+    const auto& rt = regs.rt[index];
+    const GPUVAddr gpu_addr = rt.Address();
+    if (gpu_addr == 0) {
+        return ImageViewId{};
+    }
+    if (rt.format == Tegra::RenderTargetFormat::NONE) {
+        return ImageViewId{};
+    }
+    ImageInfo info(regs.rt[index], regs.anti_alias_samples_mode);
+    const auto& clear = regs.clear_surface;
+    const bool want_exact = static_cast<size_t>(clear.RT) == index && clear.R != 0 &&
+                            clear.G != 0 && clear.B != 0 && clear.A != 0;
+    ApplyClearExactSize(info, gpu_addr, want_exact);
+    return FindRenderTargetView(info, gpu_addr);
+}
+
+template <class P>
+ImageViewId TextureCache<P>::FindDepthBuffer() {
+    const auto& regs = maxwell3d->regs;
+    if (!regs.zeta_enable) {
+        return ImageViewId{};
+    }
+    const GPUVAddr gpu_addr = regs.zeta.Address();
+    if (gpu_addr == 0) {
+        return ImageViewId{};
+    }
+    ImageInfo info(regs.zeta, regs.zeta_size, regs.anti_alias_samples_mode);
+    ApplyClearExactSize(info, gpu_addr, regs.clear_surface.Z != 0);
     return FindRenderTargetView(info, gpu_addr);
 }
 

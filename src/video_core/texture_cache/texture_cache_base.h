@@ -1579,6 +1579,9 @@ private:
     /// Applies EDEN_NX2_TC_EXPECTED_MIB / EDEN_NX2_TC_CRITICAL_MIB and logs the thresholds.
     void ApplyThresholdOverrides(bool log = true);
 
+    /// EXP68 bit 1: shrinks a padded clear target to the scissor width (within 64-byte pitch
+    /// alignment) when the clear overwrites it whole, and verifies on subsequent binds.
+    void ApplyClearExactSize(ImageInfo& info, GPUVAddr gpu_addr, bool want_exact);
     /// FRITCHII_VRAM_BUDGET_MODE: the base thresholds lowered to budget_cap (no-op at ~0).
     void ApplyBudgetCap();
     /// Small cards (< 5 GiB): keeps an active image floor above non-image VRAM in expected/critical.

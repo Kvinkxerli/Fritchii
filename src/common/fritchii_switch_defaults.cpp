@@ -233,6 +233,11 @@ void LoadExperiments() {
         // 35 -> 6 ms/s, guest lock waits halved. No beams in that session or two later ones
         // played with it on from boot.
         g_experiments[49].store(1, std::memory_order_relaxed);
+        // EXP84 = 1 + EXP100 = 1: lock-free guest read checks using image_count_filter and
+        // gpu_image_filter (+ image_seq) instead of blocking guest cores on both caches' mutexes.
+        g_experiments[83].store(1, std::memory_order_relaxed);
+        g_experiments[84].store(1, std::memory_order_relaxed);
+        g_experiments[100].store(1, std::memory_order_relaxed);
         // EXP39 = 3: publish to a back that waits after 8 words, no snapshot refresh of entries
         // that ran (see the EXP39 notes in docs/fritchii/switches.md). Timing only.
         g_experiments[39].store(3, std::memory_order_relaxed);
