@@ -71,17 +71,29 @@ void Fermi2D::FrontNoteMethod(u32 method, u32 argument) {
 // On false, `size` says why (DmaPusher's BlitMiss) in its low byte: 1 a destination register
 // the range needs was not sent yet (bits 8 and up: which, bit n for dst register 0x80 + n), 2
 // an undecodable format (bits 8 and up: the format), 3 an empty surface.
-bool Fermi2D::FrontBlitRange(GPUVAddr& begin, u64& size) const {
+void Fermi2D::SyncDstRegisters(std::array<u32, FrontCount>& out) const {
+    for (u32 i = 0; i < FrontCount; ++i) {
+        out[i] = regs.reg_array[FrontDstFirst + i];
+    }
+    for (const auto& [sink_method, value] : method_sink) {
+        if (sink_method >= FrontDstFirst && sink_method - FrontDstFirst < FrontCount) {
+            out[sink_method - FrontDstFirst] = value;
+        }
+    }
+}
+
+bool Fermi2D::ComputeDstRange(const std::array<u32, FrontCount>& dst_regs, u32 seen_mask,
+                              GPUVAddr& begin, u64& size) {
     static_assert(sizeof(Surface) == FrontCount * sizeof(u32));
     Surface dst;
-    std::memcpy(&dst, front_regs.data(), sizeof(dst));
+    std::memcpy(&dst, dst_regs.data(), sizeof(dst));
     // Format, layout, address, width and height; the pitch for a pitch surface, the block sizes
     // for a block linear one. Depth starts at 1 on both sides (constructor); the layer is not
     // read (the blits ignore it).
     const bool block_linear = dst.linear == MemoryLayout::BlockLinear;
     const u32 needed = 0x3C3 | (block_linear ? 1U << 2 : 1U << 5);
-    if ((front_seen & needed) != needed) {
-        size = 1 | (u64{needed & ~front_seen} << 8);
+    if ((seen_mask & needed) != needed) {
+        size = 1 | (u64{needed & ~seen_mask} << 8);
         return false;
     }
     // SoftwareBlitEngine::Blit's get_surface_size for the destination; it refuses an
@@ -105,6 +117,10 @@ bool Fermi2D::FrontBlitRange(GPUVAddr& begin, u64& size) const {
         return false;
     }
     return true;
+}
+
+bool Fermi2D::FrontBlitRange(GPUVAddr& begin, u64& size) const {
+    return ComputeDstRange(front_regs, front_seen, begin, size);
 }
 
 void Fermi2D::ConsumeSinkImpl(Core::System& system) {

@@ -42,8 +42,23 @@ public:
     explicit Fermi2D(MemoryManager& memory_manager_);
     ~Fermi2D() override;
 
+    static constexpr u32 FrontFirst = 0x200;
+    static constexpr u32 FrontCount = 0x0A;
+
     /// Binds a rasterizer to this engine.
     void BindRasterizer(VideoCore::RasterizerInterface* rasterizer);
+
+    [[nodiscard]] const MemoryManager& GetMemoryManager() const noexcept {
+        return memory_manager;
+    }
+
+    /// Copies destination surface registers (including sink writes) for E1 shadow tracking.
+    void SyncDstRegisters(std::array<u32, FrontCount>& out) const;
+
+    /// Computes destination GPU range [begin, begin + size) from `dst` surface registers and a
+    /// bitmask of written dst words (`seen_mask`). Returns false if incomplete or undecodable.
+    [[nodiscard]] static bool ComputeDstRange(const std::array<u32, FrontCount>& dst_regs,
+                                              u32 seen_mask, GPUVAddr& begin, u64& size);
 
     /// Write the value to the register identified by method.
     void CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) override;
@@ -317,9 +332,6 @@ public:
     [[nodiscard]] bool FrontBlitRange(GPUVAddr& begin, u64& size) const;
 
 private:
-    /// FrontNoteMethod's copy of the destination surface registers (dst, 0x200 to 0x209).
-    static constexpr u32 FrontFirst = 0x200;
-    static constexpr u32 FrontCount = 0x0A;
     std::array<u32, FrontCount> front_regs{};
     u32 front_seen{}; ///< Bit n: front_regs[n] was sent
 

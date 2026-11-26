@@ -77,6 +77,11 @@ public:
     /// Device pages this cache ever registered objects on (InnerInvalidation skips the rest).
     VideoCommon::PageFilter page_filter;
 
+    /// Bumped whenever shader regions are invalidated, allowing callers to validate cached metadata.
+    [[nodiscard]] static u64 InvalidationEpoch() noexcept {
+        return s_inval_epoch.load(std::memory_order_acquire);
+    }
+
     /// @brief Removes shaders inside a given region
     /// @note Checks for ranges
     /// @param addr Start address of the invalidation
@@ -213,6 +218,7 @@ private:
     /// first error instead of lowering again; dropped when guest memory there is written.
     std::mutex rejected_mutex;
     ::Common::unordered_map<u64, std::exception_ptr> rejected_native;
+    static inline std::atomic<u64> s_inval_epoch{1};
     /// Bounds of every address ever rejected (never shrinks): a quick test for invalidations.
     std::atomic<VAddr> rejected_lowest{~VAddr{}};
     std::atomic<VAddr> rejected_highest{};

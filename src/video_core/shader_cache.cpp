@@ -77,6 +77,7 @@ u32 GenericReadMask(const Shader::ProgramHeader& sph) noexcept {
 }
 
 void ShaderCache::InvalidateRegion(VAddr addr, size_t size) {
+    s_inval_epoch.fetch_add(1, std::memory_order_release);
     std::scoped_lock lock{invalidation_mutex};
     InvalidatePagesInRegion(addr, size);
     RemovePendingShaders();
@@ -86,6 +87,7 @@ void ShaderCache::InvalidateRegions(std::span<const std::pair<DAddr, size_t>> se
     if (sequences.empty()) {
         return;
     }
+    s_inval_epoch.fetch_add(1, std::memory_order_release);
     std::scoped_lock lock{invalidation_mutex};
     for (const auto& [addr, size] : sequences) {
         InvalidatePagesInRegion(addr, size);
@@ -94,6 +96,7 @@ void ShaderCache::InvalidateRegions(std::span<const std::pair<DAddr, size_t>> se
 }
 
 void ShaderCache::OnCacheInvalidation(VAddr addr, size_t size) {
+    s_inval_epoch.fetch_add(1, std::memory_order_release);
     std::scoped_lock lock{invalidation_mutex};
     InvalidatePagesInRegion(addr, size);
 }

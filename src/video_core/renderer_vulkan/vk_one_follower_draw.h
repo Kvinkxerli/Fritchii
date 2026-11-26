@@ -283,6 +283,18 @@ private:
     MemStage::StagedFacts facts{};
     std::vector<u32> handle_values;
 
+    struct ResetCacheEntry {
+        u64 program{};
+        DAddr device{};
+        u64 map_serial{};
+        size_t as_id{};
+        u64 inval_epoch{};
+        bool valid{};
+        bool result{};
+    };
+    static constexpr size_t ResetCacheSize = 16;
+    std::array<ResetCacheEntry, ResetCacheSize> reset_cache{};
+
     /// Diagnostics that read the draw on R (frame dump, render trace, flash watch): set by R.
     std::atomic<bool> diagnostic{};
     bool env_traces{}; ///< debug environment traces in Draw's head (read once)

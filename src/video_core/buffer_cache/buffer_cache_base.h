@@ -761,6 +761,9 @@ public:
     void SetInputsOverride(const CacheInputs* inputs) noexcept {
         inputs_override = inputs;
     }
+    [[nodiscard]] bool HasInputsOverride() const noexcept {
+        return inputs_override != nullptr;
+    }
 
     /// FRITCHII_MEMSTAGE_THREAD=2: the memory stage's copy as the bound channel's inputs.
     /// `draw_indirect_`: the copy's indirect parameters for a list draw it serves, else null.

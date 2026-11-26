@@ -52,6 +52,7 @@
 #include "video_core/memory_manager.h"
 #include "video_core/memory_stage_link.h"
 #include "video_core/memstage_shadow.h"
+#include "video_core/native_indirect_reset.h"
 #include "video_core/nx2_debug_control.h"
 #include "video_core/nx2_fastdraw_count.h"
 #include "video_core/nx2_indirect_grid.h"
@@ -63,6 +64,7 @@
 #include "video_core/renderer_vulkan/vk_one_follower_draw.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/renderer_vulkan/vk_state_tracker.h"
+#include "video_core/shader_cache.h"
 #include "video_core/texture_handle_values.h"
 
 namespace Vulkan {
@@ -368,19 +370,53 @@ OneF::LentReason OneFollowerDraw::UnlentBlocker(Maxwell3D& engine, bool is_index
         return transient(TransientTest::VertexLimit);
     }
     if (reset_candidate) {
-        // FRITCHII_ONEF_UNLENT_RESET: E runs the whole test at its own place on its own engine
-        // (the code read flushes as the lent draw's read would, here) and lends only a real
-        // reset; the rest are pushed with PacketNoReset, so R's Draw does not test again. A mesh
-        // pipeline is never one (the test's own early out): most points draws in the market.
-        // FRITCHII_ESPLIT_COUNT: the test reads the program's code (E1 would wait for E2).
-        if (OneF::UnlentResetOn()) {
-            VideoCommon::ESplit::NoteStall(VideoCommon::ESplit::StallCause::MemoryDecision);
+        const bool reset_on = OneF::UnlentResetOn();
+        bool is_reset = !reset_on;
+        if (reset_on) {
+            const GPUVAddr program =
+                (u64{engine.regs.pipelines[1].reserved[0] & 0xff} << 32) |
+                engine.regs.pipelines[1].reserved[1];
+            auto& memory = engine.GetMemoryManager();
+            const u64 map_serial = memory.MapSerial();
+            const size_t as_id = memory.GetID();
+            const u64 shader_epoch = VideoCommon::ShaderCache::InvalidationEpoch();
+            const bool e_split_async = VideoCommon::ESplit::g_thread && VideoCommon::ESplit::OnE1();
+            const bool shader_pending = e_split_async && VideoCommon::ESplit::ShaderPending();
+            constexpr size_t code_bytes =
+                sizeof(u32) * VideoCommon::NativeIndirectReset::Program.size();
+            ResetCacheEntry& cached = reset_cache[(program >> 4) & (ResetCacheSize - 1)];
+            const bool hit = e_split_async && !shader_pending && cached.valid &&
+                             cached.program == program && cached.map_serial == map_serial &&
+                             cached.as_id == as_id && cached.inval_epoch == shader_epoch &&
+                             OneF::OnShaderPages(cached.device, code_bytes);
+            if (hit) {
+                is_reset = cached.result;
+            } else {
+                // FRITCHII_ONEF_UNLENT_RESET: E runs the whole test at its own place on its own
+                // engine (the code read flushes as the lent draw's read would, here) and lends only
+                // a real reset; the rest are pushed with PacketNoReset, so R's Draw does not test
+                // again.
+                VideoCommon::ESplit::NoteStall(VideoCommon::ESplit::StallCause::MemoryDecision);
+                // FRITCHII_ESPLIT=1: E1 reads game memory in the test, a join.
+                const VideoCommon::ESplit::JoinScope esplit_join{VideoCommon::ESplit::Join::Decision};
+                is_reset = RasterizerVulkan::IsNx2IndirectResetOn(engine, memory, false, 1);
+                if (e_split_async && ((program + 128) & 0xfffU) + code_bytes <= 0x1000U) {
+                    if (const auto dev = memory.GpuToCpuAddress(program + 128);
+                        dev && OneF::OnShaderPages(*dev, code_bytes)) {
+                        cached = ResetCacheEntry{
+                            .program = program,
+                            .device = *dev,
+                            .map_serial = map_serial,
+                            .as_id = as_id,
+                            .inval_epoch = VideoCommon::ShaderCache::InvalidationEpoch(),
+                            .valid = true,
+                            .result = is_reset,
+                        };
+                    }
+                }
+            }
         }
-        // FRITCHII_ESPLIT=1: E1 reads game memory in the test, a join.
-        const VideoCommon::ESplit::JoinScope esplit_join{VideoCommon::ESplit::Join::Decision,
-                                                         OneF::UnlentResetOn()};
-        if (!OneF::UnlentResetOn() || RasterizerVulkan::IsNx2IndirectResetOn(
-                                          engine, engine.GetMemoryManager(), false, 1)) {
+        if (is_reset) {
             return transient(TransientTest::IndirectReset);
         }
         push_flags |= OneF::PacketNoReset;
@@ -471,7 +507,7 @@ bool OneFollowerDraw::FillRing(Maxwell3D& engine, GraphicsPipeline* pipeline, bo
     if (esplit_records) [[unlikely]] {
         esplit_view = esplit_thread ? VideoCommon::ESplit::FillView(engine)
                                     : VideoCommon::ESplit::DrawHandOver(engine, list_args);
-        if (esplit_view != nullptr) {
+        if (esplit_view != nullptr && !r.buffer_cache.HasInputsOverride()) {
             esplit_inputs.emplace(r.buffer_cache.StageInputs(
                 esplit_view->regs, esplit_view->state, esplit_view->root_tables,
                 esplit_view->draw_state,
@@ -481,7 +517,7 @@ bool OneFollowerDraw::FillRing(Maxwell3D& engine, GraphicsPipeline* pipeline, bo
         }
     }
     SCOPE_EXIT {
-        if (esplit_view != nullptr) {
+        if (esplit_inputs) {
             r.buffer_cache.SetInputsOverride(nullptr);
         }
     };
@@ -530,23 +566,26 @@ bool OneFollowerDraw::FillRing(Maxwell3D& engine, GraphicsPipeline* pipeline, bo
     std::optional<Profile::FineScope> handles_zone{std::in_place, Profile::Zone::DrawHandles};
     // FRITCHII_HANDLE_PROG_KEEP (fable_b 25.2 cut g): a pipeline with handle programs keeps their
     // results while every word they read is unchanged.
-    const int program_keep =
-        pipeline != nullptr ? VideoCommon::FillCuts::Mode(VideoCommon::FillCuts::Cut::HandleProgKeep)
-                            : 0;
-    if (program_keep != 0 &&
-        std::ranges::any_of(handle_infos, [](const Shader::Info& info) {
-            return !info.handle_programs.empty();
-        })) [[unlikely]] {
-        FillHandleValuesKept(engine, handle_infos, pipeline, facts.hashes, null_pointer_handles,
-                             program_keep);
-    } else {
-        VideoCommon::FillGraphicsHandleValues(
-            handle_infos, engine.GetMemoryManager(),
-            [&stages](size_t stage) {
-                return VideoCommon::GraphicsHandleCbufs<Cbufs>{stages[stage].const_buffers};
-            },
-            r.device.GetStorageBufferAlignment(), null_pointer_handles,
-            [this](u32 raw) { handle_values.push_back(raw); });
+    if (pipeline == nullptr || pipeline_facts.reads_handles) {
+        const int program_keep =
+            pipeline != nullptr
+                ? VideoCommon::FillCuts::Mode(VideoCommon::FillCuts::Cut::HandleProgKeep)
+                : 0;
+        if (program_keep != 0 &&
+            std::ranges::any_of(handle_infos, [](const Shader::Info& info) {
+                return !info.handle_programs.empty();
+            })) [[unlikely]] {
+            FillHandleValuesKept(engine, handle_infos, pipeline, facts.hashes,
+                                 null_pointer_handles, program_keep);
+        } else {
+            VideoCommon::FillGraphicsHandleValues(
+                handle_infos, engine.GetMemoryManager(),
+                [&stages](size_t stage) {
+                    return VideoCommon::GraphicsHandleCbufs<Cbufs>{stages[stage].const_buffers};
+                },
+                r.device.GetStorageBufferAlignment(), null_pointer_handles,
+                [this](u32 raw) { handle_values.push_back(raw); });
+        }
     }
     handles_zone.reset(); // helper CP: "draw handle values"
     if (price_handles) [[unlikely]] {
@@ -1092,6 +1131,13 @@ bool OneFollowerDraw::FillAndPush(Maxwell3D& engine, bool is_indexed, u64 seq, b
                     OneF::PushDrawPacked(t.header, t.packet, t.packet_bytes, 0);
                     return;
                 }
+                std::optional<VideoCommon::CacheInputs> inputs;
+                auto& cache = self.rasterizer.buffer_cache;
+                SCOPE_EXIT {
+                    if (inputs) {
+                        cache.SetInputsOverride(nullptr);
+                    }
+                };
                 if (t.flush) {
                     auto& memory_manager = t.engine->GetMemoryManager();
                     if (memory_manager.HasPendingCachedWrites() ||
@@ -1104,19 +1150,14 @@ bool OneFollowerDraw::FillAndPush(Maxwell3D& engine, bool is_indexed, u64 seq, b
                         // after its record), never to E1's engine, which has moved on. No cache
                         // lock around it: the invalidation may be lent, and R takes that lock (R
                         // runs it as E, so it marks the view too).
-                        auto& cache = self.rasterizer.buffer_cache;
                         VideoCommon::ESplit::View& view = VideoCommon::ESplit::ThreadView();
-                        std::optional<VideoCommon::CacheInputs> inputs;
                         if (view.seeded && view.engine == t.engine) {
-                            inputs.emplace(cache.StageInputs(view.regs, view.state,
-                                                             view.root_tables, view.draw_state,
-                                                             view.flags));
+                            inputs.emplace(cache.StageInputs(
+                                view.regs, view.state, view.root_tables, view.draw_state,
+                                view.flags, t.list ? &view.indirect : nullptr));
                             cache.SetInputsOverride(&*inputs);
                         }
                         memory_manager.FlushCaching();
-                        if (inputs) {
-                            cache.SetInputsOverride(nullptr);
-                        }
                     }
                 }
                 u64 number = 0;

@@ -16,7 +16,11 @@ namespace Core {
 class System;
 }
 namespace Tegra::Engines {
+class EngineInterface;
 class Maxwell3D;
+}
+namespace VideoCommon {
+class GpuSplit;
 }
 namespace VideoCore {
 class RasterizerInterface;
@@ -175,6 +179,10 @@ inline thread_local bool t_lookup{};
 inline std::atomic<bool> g_shader_pending{};
 
 void BeginLookupImpl() noexcept;
+/// E1: true when a queued write onto shader pages has not yet been drained by a lookup.
+[[nodiscard]] inline bool ShaderPending() noexcept {
+    return g_shader_pending.load(std::memory_order_acquire);
+}
 /// Around E1's pipeline lookup (FillAndPush, rule 3): drains and flushes first when a shader page
 /// write is pending (a "lookup join"); the lookup's reads of shader code count as allowed.
 class LookupScope {
@@ -390,6 +398,18 @@ private:
 /// E1: the open constant buffer record goes to E2 now. Also done before any other hand-over,
 /// drain, join, push or wait of E1's, so nothing E1 or the front does later can pass it.
 void PostCbWrites() noexcept;
+/// E1: queues a contiguous compute/other engine entry for E2, coalescing consecutive entries on
+/// the same engine into a single async job.
+void QueueEngineEntry(VideoCommon::GpuSplit& split, Tegra::Engines::EngineInterface* engine,
+                      const u64* entry, std::size_t words) noexcept;
+/// E1: waits until `done_seq >= target_seq` without draining unrelated later jobs.
+void WaitConditionImpl(const std::atomic<u64>& done_seq, u64 target_seq) noexcept;
+inline void WaitCondition(const std::atomic<u64>& done_seq, u64 target_seq) noexcept {
+    if (done_seq.load(std::memory_order_acquire) >= target_seq) {
+        return;
+    }
+    WaitConditionImpl(done_seq, target_seq);
+}
 /// E2's stream-write guard found tracked pages in an async constant buffer record
 /// (ESplitCbGuard, must be 0: E1 found them clear when it queued the write).
 void NoteCbGuardHit() noexcept;

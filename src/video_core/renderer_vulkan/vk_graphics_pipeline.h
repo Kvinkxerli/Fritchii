@@ -231,6 +231,7 @@ public:
             .has_texel_buffers = has_texel_buffers,
             .uses_descriptor_buffer = uses_descriptor_buffer,
             .hashes = {key.unique_hashes[1], key.unique_hashes[5]},
+            .reads_handles = reads_handles,
         };
     }
 
@@ -821,6 +822,7 @@ private:
     /// stage binds texture or image buffers (the fill then stays in Configure: LateFill).
     u32 spec_stages{};
     bool has_texel_buffers{};
+    bool reads_handles{};
     TextureMemo texture_memo;
     TexBankMemo tex_bank_memo;
     /// EDEN_NX2_TEX_BANK_GEN: (stage, constant buffer index) of every handle word read.

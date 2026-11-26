@@ -1260,6 +1260,10 @@ GraphicsPipeline::GraphicsPipeline(
     has_texel_buffers = std::ranges::any_of(stage_infos, [](const Shader::Info& info) {
         return !info.texture_buffer_descriptors.empty() || !info.image_buffer_descriptors.empty();
     });
+    reads_handles = has_texel_buffers || std::ranges::any_of(stage_infos, [](const Shader::Info& info) {
+        return !info.texture_descriptors.empty() || !info.image_descriptors.empty() ||
+               !info.handle_programs.empty();
+    });
     if (samples_nothing && !IsMeshPipeline()) {
         configure_delta_func = ConfigureFunc<false, true>(present_stages, stage_infos);
     }

@@ -245,6 +245,20 @@ public:
 
     void BindRasterizer(VideoCore::RasterizerInterface* rasterizer);
 
+    [[nodiscard]] const MemoryManager& GetMemoryManager() const noexcept {
+        return memory_manager;
+    }
+
+    /// Copies the first 0x200 registers (including current sink entries) for shadow tracking.
+    void SyncShadowRegisters(std::array<u32, 0x200>& out) const;
+
+    /// Computes launch semaphore and destination GPU ranges from shadow register array `r`.
+    /// Returns false if destination size is dynamic/unbounded (physical or negative pitch).
+    [[nodiscard]] static bool ComputeLaunchWriteRanges(const std::array<u32, 0x200>& r, u32 launch,
+                                                       GPUVAddr& sem_addr, u32& sem_payload,
+                                                       u32& sem_type, GPUVAddr& dst_begin,
+                                                       u64& dst_size);
+
     explicit MaxwellDMA(MemoryManager& memory_manager_);
     ~MaxwellDMA() override;
 

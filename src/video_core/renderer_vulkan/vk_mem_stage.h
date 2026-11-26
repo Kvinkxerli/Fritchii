@@ -286,6 +286,7 @@ public:
         bool uses_descriptor_buffer;
         std::array<u64, 2> hashes; ///< Vertex and fragment program, for the logs
         const StagedFacts* staged{}; ///< THREAD = 2: the storage binds from here
+        bool reads_handles{};        ///< True when at least one graphics stage reads handles
     };
 
     /// What FillDispatch needs from the compute pipeline (spec 4.3's ComputeFacts).
@@ -583,7 +584,7 @@ public:
     void ResetStageSide(bool end);
     /// Packets in ring B the back has not taken or dropped yet (step 7's window).
     [[nodiscard]] u64 RingPackets() const noexcept {
-        return ring_packets_sent.load(std::memory_order_seq_cst) -
+        return ring_packets_sent.load(std::memory_order_acquire) -
                ring_packets_done.load(std::memory_order_seq_cst);
     }
     /// GPUMem (the only pusher): the push index the next packet gets, counted from 1 (packets

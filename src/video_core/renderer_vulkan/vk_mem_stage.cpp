@@ -1396,6 +1396,7 @@ const MemStage::DrawPacket* MemStage::FillDrawHere(Cache& cache_, const DrawFact
                 continue;
             }
             cache_.UnbindGraphicsStorageBuffers(stage);
+            cache_.UnbindGraphicsTextureBuffers(stage);
             if (facts.staged != nullptr) {
                 const StagedFacts& staged = *facts.staged;
                 for (u32 i = 0; i < staged.ssbo_counts[stage]; ++i) {
@@ -1412,11 +1413,6 @@ const MemStage::DrawPacket* MemStage::FillDrawHere(Cache& cache_, const DrawFact
                                                  desc.cbuf_offset, desc.is_written,
                                                  desc.indirect_offset);
                 ++ssbo_index;
-            }
-        }
-        for (u32 stage = 0; stage < 5; ++stage) {
-            if ((facts.stages & (1U << stage)) != 0) {
-                cache_.UnbindGraphicsTextureBuffers(stage);
             }
         }
         last_entry = ~0U;
@@ -1941,7 +1937,7 @@ void MemStage::PushRingDraw() {
     stage_fill_from = 0;
     SeamTicks::SetStamp(0, true); // no packet of GPUMem's own until the next (stamps per thread)
     const u64 sent = ring_packets_sent.load(std::memory_order_relaxed) + 1;
-    ring_packets_sent.store(sent, std::memory_order_seq_cst);
+    ring_packets_sent.store(sent, std::memory_order_release);
     if (ring_lean == 0) [[likely]] {
         Link::Get().NotePacketSent(bytes,
                                    sent - ring_packets_done.load(std::memory_order_seq_cst));
@@ -2082,7 +2078,7 @@ bool MemStage::PostPendingOp() {
         ring_b_write += bytes;
         ring_b_sent.store(ring_b_write, std::memory_order_release);
         const u64 sent = ring_packets_sent.load(std::memory_order_relaxed) + 1;
-        ring_packets_sent.store(sent, std::memory_order_seq_cst);
+        ring_packets_sent.store(sent, std::memory_order_release);
         struct Op {
             MemStage* stage;
             u64 number;
@@ -2321,7 +2317,7 @@ void MemStage::PushRingDispatch(const std::vector<u32>& values, bool null_pointe
     stage_fill_from = 0;
     SeamTicks::SetStamp(0, true);
     const u64 sent = ring_packets_sent.load(std::memory_order_relaxed) + 1;
-    ring_packets_sent.store(sent, std::memory_order_seq_cst);
+    ring_packets_sent.store(sent, std::memory_order_release);
     // As TakeHeld: the arena is done with; the next fill starts on an empty one.
     arena.Reset();
     play_cursor = 0;

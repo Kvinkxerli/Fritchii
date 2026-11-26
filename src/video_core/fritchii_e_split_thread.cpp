@@ -106,6 +106,7 @@
 #include "common/thread_cpu_clock.h"
 #include "core/core.h"
 #include "video_core/back_read_audit.h"
+#include "video_core/engines/engine_interface.h"
 #include "video_core/fritchii_e_split.h"
 #include "video_core/fritchii_e_split_thread.h"
 #include "video_core/gpu_split.h"
@@ -418,6 +419,39 @@ bool g_flush_owed{true};
 bool g_flush_async{};
 u64 g_join_mark{}; ///< the cached write count at the outer join's start (E2 drained)
 u64 g_push_mark{}; ///< ... at E1's push or lend (E2 drained)
+struct Raster {
+    VideoCore::RasterizerInterface* rasterizer;
+    u64 address;
+    u32 a, b, c, d;
+    RasterOp op;
+};
+constexpr u32 MaxRasterBatch = 4;
+struct RasterBatch {
+    u32 count;
+    u32 pad;
+    std::array<Raster, MaxRasterBatch> ops;
+};
+static_assert(sizeof(RasterBatch) <= AsyncPayloadBytes && std::is_trivially_copyable_v<RasterBatch>);
+constexpr u32 MaxEngineBatch = 64;
+struct EngineBatch {
+    GpuSplit* self;
+    Tegra::Engines::EngineInterface* engine;
+    const u64* entry;
+    u32 count;
+};
+static_assert(sizeof(EngineBatch) <= AsyncPayloadBytes && std::is_trivially_copyable_v<EngineBatch>);
+Job* g_eng_open{};
+GpuSplit* g_eng_split{};
+Tegra::Engines::EngineInterface* g_eng_engine{};
+const u64* g_eng_start{};
+const u64* g_eng_end{};
+u32 g_eng_count{};
+Job* g_raster_open{};
+u32 g_raster_count{};
+std::array<Raster, MaxRasterBatch> g_raster_ops{};
+void PostEngineBatch() noexcept;
+void PostRasterBatch() noexcept;
+void PostPendingBatches() noexcept;
 std::chrono::nanoseconds g_e1_poll{std::chrono::microseconds{50}};
 std::chrono::nanoseconds g_hold_poll{std::chrono::microseconds{20}};
 // E2's own
@@ -506,6 +540,13 @@ bool g_wake_each = false;
 
 void WakeE1() noexcept {
     if (g.e1_sleeping.load(std::memory_order_seq_cst)) {
+        g.e1_wake.fetch_add(1, std::memory_order_seq_cst);
+        g.e1_wake.notify_all();
+    }
+}
+
+void WakeE1Fenced() noexcept {
+    if (g.e1_sleeping.load(std::memory_order_relaxed)) {
         g.e1_wake.fetch_add(1, std::memory_order_seq_cst);
         g.e1_wake.notify_all();
     }
@@ -649,7 +690,7 @@ void RunJob(Job& job) {
     }
     // Lockstep: the state goes back to E1 with the job. Async: E1 moved on; E2's copy is dropped
     // (the next job installs its own).
-    if (moves_state) {
+    if (!job.async) {
         OneF::TakeEngineTls(job.tls);
         if (g_fill_state.capture != nullptr) {
             g_fill_state.capture(job.fill_state.data(), false);
@@ -829,7 +870,6 @@ void E2Main(std::stop_token) {
             continue;
         }
         Job& job = g.jobs[next % Slots];
-        const bool draw_tail = job.info.hand == Hand::DrawTail;
         // E1 wrote the next jobs' slots on its own core: their first lines are fetched while
         // this job runs (two stages: slot next + 2's header lines, then slot next + 1's buffers,
         // read from its header fetched one job earlier). Hints only.
@@ -864,14 +904,12 @@ void E2Main(std::stop_token) {
         Common::LowEndSim::CpuWorkBegin(Common::LowEndSim::CpuClass::Back);
         RunJob(job);
         Common::LowEndSim::CpuWorkEnd();
-        // `done` is a release store; E1's wake check (a fence, then its sleeping flag) runs after
-        // every draw tail (E1's depth waits count them), every 8th job (its room waits) and the
-        // last job E2 saw (its drains and idle waits wait for exactly that one), instead of a
-        // full fence after every job. FRITCHII_ESPLIT_WAKE_EACH=1: a fenced check after each.
+        // `done` is a release store; E1's wake check runs every 8th job and on the last job E2 saw
+        // (E1 always stops posting when it sleeps, so E2 reaches `avail` or the next 8th job).
         g.done.store(next, std::memory_order_release);
-        if (draw_tail || (next & 7) == 0 || next == avail || g_wake_each) {
+        if ((next & 7) == 0 || next == avail || g_wake_each) {
             std::atomic_thread_fence(std::memory_order_seq_cst);
-            WakeE1();
+            WakeE1Fenced();
         }
         if ((next & 1023) == 0) {
             g.e2_cpu_ns.store(Common::CurrentThreadCpuTimeNs().value_or(0),
@@ -958,12 +996,100 @@ void E1Wait(Ready&& ready) {
     }
 }
 
+void ExecuteRasterOp(const Raster& r) {
+    auto& rast = *r.rasterizer;
+    switch (r.op) {
+    case RasterOp::WaitForIdle:
+        rast.WaitForIdle();
+        break;
+    case RasterOp::FragmentBarrier:
+        rast.FragmentBarrier();
+        break;
+    case RasterOp::InvalidateTextureDataCache:
+        rast.InvalidateTextureDataCache();
+        break;
+    case RasterOp::TiledCacheBarrier:
+        rast.TiledCacheBarrier();
+        break;
+    case RasterOp::Query:
+        rast.Query(r.address, static_cast<VideoCommon::QueryType>(r.a),
+                   static_cast<VideoCommon::QueryPropertiesFlags>(r.b), r.c, r.d);
+        break;
+    case RasterOp::ResetCounter:
+        rast.ResetCounter(static_cast<VideoCommon::QueryType>(r.a));
+        break;
+    case RasterOp::SignalSyncPoint:
+        rast.SignalSyncPoint(r.a);
+        break;
+    }
+}
+
+void RunRasterBatch(void* raw) {
+    RasterBatch b;
+    std::memcpy(&b, raw, sizeof(b));
+    for (u32 i = 0; i < b.count; ++i) {
+        ExecuteRasterOp(b.ops[i]);
+    }
+}
+
+void RunEngineBatch(void* raw) {
+    EngineBatch b;
+    std::memcpy(&b, raw, sizeof(b));
+    const u64* entry = b.entry;
+    for (u32 i = 0; i < b.count; ++i) {
+        entry += b.self->ExecuteOnEngine(b.engine, entry);
+    }
+}
+
+void PostEngineBatch() noexcept {
+    if (g_eng_open == nullptr) {
+        return;
+    }
+    Job& job = *std::exchange(g_eng_open, nullptr);
+    const EngineBatch batch{g_eng_split, g_eng_engine, g_eng_start, g_eng_count};
+    g_eng_split = nullptr;
+    g_eng_engine = nullptr;
+    g_eng_start = nullptr;
+    g_eng_end = nullptr;
+    g_eng_count = 0;
+    std::memcpy(job.payload.data(), &batch, sizeof(batch));
+    job.function = &RunEngineBatch;
+    job.argument = job.payload.data();
+    job.tls = OneF::EngineTls{};
+    job.tls.query_kind = OneF::QueryKind::Count;
+    Publish(job.seq);
+}
+
+void PostRasterBatch() noexcept {
+    if (g_raster_open == nullptr) {
+        return;
+    }
+    Job& job = *std::exchange(g_raster_open, nullptr);
+    RasterBatch batch{};
+    batch.count = std::exchange(g_raster_count, 0);
+    for (u32 i = 0; i < batch.count; ++i) {
+        batch.ops[i] = g_raster_ops[i];
+    }
+    std::memcpy(job.payload.data(), &batch, sizeof(batch));
+    job.function = &RunRasterBatch;
+    job.argument = job.payload.data();
+    job.tls = OneF::EngineTls{};
+    job.tls.query_kind = OneF::QueryKind::Count;
+    Publish(job.seq);
+}
+
+void PostPendingBatches() noexcept {
+    PostCbWrites();
+    PostEngineBatch();
+    PostRasterBatch();
+}
+
 void WaitDone(u64 seq) {
     E1Wait([seq] { return g.done.load(std::memory_order_acquire) >= seq; });
 }
 
 void WaitDrained() {
-    PostCbWrites(); // S4: the open record first, so "drained" includes it
+    PostPendingBatches(); // S4: any open record/batch first, so "drained" includes it
     WaitDone(g_next_seq - 1);
 }
 
@@ -981,7 +1107,7 @@ void ToView() {
 }
 
 Job& TakeSlot(bool draw_tail) {
-    PostCbWrites(); // S4: the open record keeps its place in ring order
+    PostPendingBatches(); // S4: any open record/batch keeps its place in ring order
     const CauseScope cause{draw_tail ? CauseDepth : CauseRoom};
     E1Wait([draw_tail] {
         const u64 done = g.done.load(std::memory_order_acquire);
@@ -1393,9 +1519,9 @@ void ThreadBatch() noexcept {
     if (!g_thread) {
         return;
     }
-    // Default 16: the queued mode; 0 = S1's lockstep (the check mode).
+    // Default 36: the queued mode; 0 = S1's lockstep (the check mode).
     int depth = VideoCore::Nx2Debug::SwitchValue(VideoCore::Nx2Debug::g_esplit_depth,
-                                                 "FRITCHII_ESPLIT_DEPTH", 16);
+                                                 "FRITCHII_ESPLIT_DEPTH", 36);
     depth = std::clamp(depth, 0, MaxDepth);
     if (depth != g_depth) [[unlikely]] {
         SetDepth(depth);
@@ -1434,7 +1560,7 @@ void ThreadBatch() noexcept {
         g_async && VideoCore::Nx2Debug::SwitchValue(VideoCore::Nx2Debug::g_esplit_flush_async,
                                                     "FRITCHII_ESPLIT_FLUSH_ASYNC") != 0;
     if (cb_async != g_cb_async || flush_async != g_flush_async) [[unlikely]] {
-        PostCbWrites();
+        PostPendingBatches();
         LOG_INFO(HW_GPU,
                  "E split thread: FRITCHII_ESPLIT_CB_ASYNC {}, FRITCHII_ESPLIT_FLUSH_ASYNC {} "
                  "(both need FRITCHII_ESPLIT_DEPTH > 0)",
@@ -1452,7 +1578,7 @@ void ThreadBatch() noexcept {
                                              "FRITCHII_ESPLIT_BIND_BATCH"),
             0, 3);
         if (bind_batch != g_bind_batch) [[unlikely]] {
-            PostCbWrites();
+            PostPendingBatches();
             static constexpr std::array<const char*, 4> Modes{
                 "off: a job per bind", "on: binds packed into records, same-value binds dropped",
                 "verify: packed, nothing dropped, the would-drop binds checked",
@@ -1638,13 +1764,6 @@ void E2ExclusiveEnd() noexcept {
 
 void QueueRasterOpImpl(RasterOp op, VideoCore::RasterizerInterface& rasterizer, u64 address,
                        u32 a, u32 b, u32 c, u32 d) noexcept {
-    struct Raster {
-        VideoCore::RasterizerInterface* rasterizer;
-        u64 address;
-        u32 a, b, c, d;
-        RasterOp op;
-    } const raster{&rasterizer, address, a, b, c, d, op};
-    static_assert(sizeof(Raster) <= AsyncPayloadBytes && std::is_trivially_copyable_v<Raster>);
     // The samples mirror: E1's copy follows its queue (the reset clears it on E2 later).
     if (op == RasterOp::ResetCounter &&
         a == static_cast<u32>(VideoCommon::QueryType::ZPassPixelCount64) &&
@@ -1660,37 +1779,28 @@ void QueueRasterOpImpl(RasterOp op, VideoCore::RasterizerInterface& rasterizer, 
             NoteQueuedWrite(&engine->GetMemoryManager(), address, 16);
         }
     }
-    void* const payload = BeginAsync(Hand::Raster);
-    std::memcpy(payload, &raster, sizeof(raster));
-    PostAsync([](void* raw) {
-        Raster r;
-        std::memcpy(&r, raw, sizeof(r));
-        auto& rast = *r.rasterizer;
-        switch (r.op) {
-        case RasterOp::WaitForIdle:
-            rast.WaitForIdle();
-            break;
-        case RasterOp::FragmentBarrier:
-            rast.FragmentBarrier();
-            break;
-        case RasterOp::InvalidateTextureDataCache:
-            rast.InvalidateTextureDataCache();
-            break;
-        case RasterOp::TiledCacheBarrier:
-            rast.TiledCacheBarrier();
-            break;
-        case RasterOp::Query:
-            rast.Query(r.address, static_cast<VideoCommon::QueryType>(r.a),
-                       static_cast<VideoCommon::QueryPropertiesFlags>(r.b), r.c, r.d);
-            break;
-        case RasterOp::ResetCounter:
-            rast.ResetCounter(static_cast<VideoCommon::QueryType>(r.a));
-            break;
-        case RasterOp::SignalSyncPoint:
-            rast.SignalSyncPoint(r.a);
-            break;
+    const Raster raster{&rasterizer, address, a, b, c, d, op};
+    if (!g_async || t_role != 1 || t_join != 0) {
+        ExecuteRasterOp(raster);
+        return;
+    }
+    if (g_raster_open != nullptr && g_raster_count < MaxRasterBatch) {
+        g_raster_ops[g_raster_count++] = raster;
+        if (g_raster_count == MaxRasterBatch) {
+            PostRasterBatch();
         }
-    });
+        return;
+    }
+    if (g_raster_open != nullptr) {
+        PostRasterBatch();
+    }
+    Job& job = TakeSlot(false);
+    job.async = true;
+    job.info = HandInfo{.hand = Hand::Raster};
+    g_raster_open = &job;
+    g_raster_ops[0] = raster;
+    g_raster_count = 1;
+    ++g_e1.hands[static_cast<size_t>(Hand::Raster)];
 }
 
 bool WaitE2IdleOrImpl(bool (*more)(void*), void* argument) noexcept {
@@ -1698,7 +1808,7 @@ bool WaitE2IdleOrImpl(bool (*more)(void*), void* argument) noexcept {
     bool woken = false;
     {
         const CauseScope cause{static_cast<size_t>(Join::Idle)};
-        PostCbWrites();
+        PostPendingBatches();
         // E2 bumps E1's wake word (after every 8th job, each draw tail and when it ran out of
         // jobs) while E1 sleeps: `more` is asked again then.
         E1Wait([&] {
@@ -2301,6 +2411,52 @@ void NoteTouchImpl(Touch kind, const void* caller) noexcept {
                   GpuSplit::Get().BackEntryPosition(),
                   caller != nullptr ? Site(caller) : Stack());
     }
+}
+
+void QueueEngineEntry(VideoCommon::GpuSplit& split, Tegra::Engines::EngineInterface* engine,
+                      const u64* entry, std::size_t words) noexcept {
+    if (entry == nullptr || words == 0) {
+        return;
+    }
+    if (!g_async || t_role != 1 || t_join != 0) {
+        (void)split.ExecuteOnEngine(engine, entry);
+        return;
+    }
+    if (g_eng_open != nullptr && g_eng_split == &split && g_eng_engine == engine &&
+        g_eng_end == entry && g_eng_count < MaxEngineBatch) {
+        g_eng_end += words;
+        ++g_eng_count;
+        if (g_eng_count == MaxEngineBatch) {
+            PostEngineBatch();
+        }
+        return;
+    }
+    if (g_eng_open != nullptr) {
+        PostEngineBatch();
+    }
+    Job& job = TakeSlot(false);
+    job.async = true;
+    job.info = HandInfo{.hand = Hand::Async};
+    g_eng_open = &job;
+    g_eng_split = &split;
+    g_eng_engine = engine;
+    g_eng_start = entry;
+    g_eng_end = entry + words;
+    g_eng_count = 1;
+    ++g_e1.hands[static_cast<size_t>(Hand::Async)];
+}
+
+void WaitConditionImpl(const std::atomic<u64>& done_seq, u64 target_seq) noexcept {
+    if (!g_thread || t_role != 1 || t_join != 0 ||
+        done_seq.load(std::memory_order_acquire) >= target_seq) {
+        return;
+    }
+    PostPendingBatches();
+    ++g_e1.joins[static_cast<size_t>(Join::Condition)];
+    const CauseScope cause{static_cast<size_t>(Join::Condition)};
+    E1Wait([&done_seq, target_seq] {
+        return done_seq.load(std::memory_order_acquire) >= target_seq;
+    });
 }
 
 } // namespace VideoCommon::ESplit

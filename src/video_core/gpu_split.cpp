@@ -33,8 +33,10 @@
 #include "common/thread.h"
 #include "core/core.h"
 #include "video_core/engines/engine_interface.h"
+#include "video_core/engines/fermi_2d.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
+#include "video_core/engines/maxwell_dma.h"
 #include "video_core/fritchii_e_split.h"
 #include "video_core/fritchii_e_split_thread.h"
 #include "video_core/fritchii_price.h"
@@ -4961,13 +4963,131 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
             }
         } compute_upload{};
 
+        // Track Fermi2D and MaxwellDMA destination registers on E1 so plain register writes skip
+        // NoteQueuedWriteAnywhere and launches check shader pages by exact range.
+        struct OtherUploadTrack {
+            const Tegra::Engines::EngineInterface* f2d_engine{};
+            std::array<u32, Tegra::Engines::Fermi2D::FrontCount> f2d_dst{};
+            u32 f2d_seen{};
+            const Tegra::Engines::EngineInterface* dma_engine{};
+            std::unique_ptr<std::array<u32, 0x200>> dma_regs;
+            bool dma_synced{};
+
+            void ResetAll() noexcept {
+                f2d_engine = nullptr;
+                f2d_seen = 0;
+                dma_engine = nullptr;
+                dma_synced = false;
+            }
+            void SyncFromEngine(const Tegra::Engines::EngineInterface* e) noexcept {
+                if (e == nullptr) {
+                    return;
+                }
+                if (const auto* f2d = dynamic_cast<const Tegra::Engines::Fermi2D*>(e)) {
+                    f2d_engine = e;
+                    f2d->SyncDstRegisters(f2d_dst);
+                    f2d_seen = (1U << Tegra::Engines::Fermi2D::FrontCount) - 1U;
+                } else if (const auto* dma = dynamic_cast<const Tegra::Engines::MaxwellDMA*>(e)) {
+                    dma_engine = e;
+                    if (!dma_regs) {
+                        dma_regs = std::make_unique<std::array<u32, 0x200>>();
+                    }
+                    dma->SyncShadowRegisters(*dma_regs);
+                    dma_synced = true;
+                }
+            }
+            void NoteReg(const Tegra::Engines::EngineInterface* e, u32 m, u32 val) noexcept {
+                if (e == nullptr) {
+                    return;
+                }
+                if (const auto* f2d = dynamic_cast<const Tegra::Engines::Fermi2D*>(e)) {
+                    if (e != f2d_engine) {
+                        f2d_engine = e;
+                        f2d_seen = 0;
+                        if (ESplit::E2Idle()) {
+                            f2d->SyncDstRegisters(f2d_dst);
+                            f2d_seen = (1U << Tegra::Engines::Fermi2D::FrontCount) - 1U;
+                        }
+                    }
+                    constexpr u32 first = FERMI2D_REG_INDEX(dst);
+                    if (m - first < Tegra::Engines::Fermi2D::FrontCount) {
+                        f2d_dst[m - first] = val;
+                        f2d_seen |= 1U << (m - first);
+                    }
+                } else if (const auto* dma = dynamic_cast<const Tegra::Engines::MaxwellDMA*>(e)) {
+                    if (!dma_regs) {
+                        dma_regs = std::make_unique<std::array<u32, 0x200>>();
+                    }
+                    if (e != dma_engine) {
+                        dma_engine = e;
+                        if (ESplit::E2Idle()) {
+                            dma->SyncShadowRegisters(*dma_regs);
+                            dma_synced = true;
+                        } else {
+                            dma_synced = false;
+                        }
+                    }
+                    if (dma_synced && m < dma_regs->size()) {
+                        (*dma_regs)[m] = val;
+                    }
+                }
+            }
+            void NoteExec(const Tegra::Engines::EngineInterface* e, u32 m, u32 val) const noexcept {
+                if (!ESplit::g_owed_shader_rule) {
+                    return;
+                }
+                if (e == f2d_engine && e != nullptr) {
+                    constexpr u32 blit_m = FERMI2D_REG_INDEX(pixels_from_memory.src_y0) + 1;
+                    if (m != blit_m) {
+                        ESplit::NoteQueuedWriteAnywhere();
+                        return;
+                    }
+                    GPUVAddr begin = 0;
+                    u64 size = 0;
+                    if (!Tegra::Engines::Fermi2D::ComputeDstRange(f2d_dst, f2d_seen, begin, size)) {
+                        ESplit::NoteQueuedWriteAnywhere();
+                        return;
+                    }
+                    const auto* f2d = static_cast<const Tegra::Engines::Fermi2D*>(e);
+                    ESplit::NoteQueuedWrite(&f2d->GetMemoryManager(), begin, size);
+                    return;
+                }
+                if (e == dma_engine && e != nullptr && dma_synced && dma_regs) {
+                    constexpr u32 launch_m = 0x300U / sizeof(u32);
+                    if (m != launch_m) {
+                        ESplit::NoteQueuedWriteAnywhere();
+                        return;
+                    }
+                    GPUVAddr sem_addr = 0;
+                    u32 sem_payload = 0;
+                    u32 sem_type = 0;
+                    GPUVAddr dst_begin = 0;
+                    u64 dst_size = 0;
+                    const bool bounded = Tegra::Engines::MaxwellDMA::ComputeLaunchWriteRanges(
+                        *dma_regs, val, sem_addr, sem_payload, sem_type, dst_begin, dst_size);
+                    (void)sem_payload;
+                    const auto* dma = static_cast<const Tegra::Engines::MaxwellDMA*>(e);
+                    if (sem_type != 0) {
+                        ESplit::NoteQueuedWrite(&dma->GetMemoryManager(), sem_addr, 16);
+                    }
+                    if (!bounded) {
+                        ESplit::NoteQueuedWriteAnywhere();
+                        return;
+                    }
+                    ESplit::NoteQueuedWrite(&dma->GetMemoryManager(), dst_begin, dst_size);
+                    return;
+                }
+                ESplit::NoteQueuedWriteAnywhere();
+            }
+        } other_upload{};
+
         // FRITCHII_ESPLIT=1: an E2 entry runs on E2 (E1 applies the sunk register writes first,
         // as Execute would first thing, and builds the record of E2's view); a join entry runs
         // here with E2 idle (S1) or drained (S2); an E1 entry runs here and hands its own E2
         // parts over (a draw's flush and tail, a bind's buffer cache half).
-        const auto esplit_execute = [this, &compute_upload](const ESplit::EntryInfo& info,
-                                                            const u64* entry,
-                                                            size_t words) -> size_t {
+        const auto esplit_execute = [this, &compute_upload, &other_upload](
+                                        const ESplit::EntryInfo& info, const u64* entry,
+                                        size_t words) -> size_t {
             if (info.cls == ESplit::Class::E2 && ESplit::g_async) {
                 // The queued mode: no hand-over per entry. A 3D constant buffer entry runs here
                 // (S4: its register half on E1's engine, each memory half queued for E2 in ring
@@ -5065,28 +5185,50 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                                 }
                             }
                         }
-                    } else if (ESplit::g_owed_shader_rule) {
-                        const u32 other_method = static_cast<u32>((head >> 8) & 0xffff);
-                        const bool store =
-                            kind == Kind::Method &&
-                            ((head & Sink) != 0 ||
-                             ((head & Direct) == 0 && back_engine != nullptr &&
-                              !back_engine->execution_mask[other_method]));
-                        if (!store) {
-                            ESplit::NoteQueuedWriteAnywhere();
+                    } else {
+                        const bool sink_or_store = (head & Sink) != 0;
+                        if (kind == Kind::Method) {
+                            const u32 m = static_cast<u32>((head >> 8) & 0xffff);
+                            const u32 arg = static_cast<u32>(head >> 32);
+                            other_upload.NoteReg(back_engine, m, arg);
+                            if (ESplit::g_owed_shader_rule && !sink_or_store &&
+                                ((head & Direct) != 0 || back_engine == nullptr ||
+                                 back_engine->execution_mask[m])) {
+                                other_upload.NoteExec(back_engine, m, arg);
+                            }
+                        } else if (kind == Kind::Multi) {
+                            const u32 m = static_cast<u32>((head >> 8) & 0xffff);
+                            const u32 amount = static_cast<u32>(head >> 32);
+                            const size_t data_idx = (head & HasSegment) != 0 ? 3 : 2;
+                            const u32* const args = reinterpret_cast<const u32*>(entry + data_idx);
+                            const bool exec =
+                                (head & Direct) != 0 || back_engine == nullptr ||
+                                back_engine->execution_mask[m];
+                            for (u32 i = 0; i < amount; ++i) {
+                                other_upload.NoteReg(back_engine, m, args[i]);
+                                if (ESplit::g_owed_shader_rule && exec) {
+                                    if ((head & Direct) != 0) {
+                                        ESplit::NoteQueuedWriteAnywhere();
+                                    } else {
+                                        other_upload.NoteExec(back_engine, m, args[i]);
+                                    }
+                                }
+                            }
+                        } else {
+                            const u32 count = static_cast<u32>(head >> 32);
+                            for (u32 i = 0; i < count; ++i) {
+                                const u64 pair = entry[1 + i];
+                                const u32 m = static_cast<u32>(pair & 0xffff);
+                                const u32 arg = static_cast<u32>(pair >> 32);
+                                other_upload.NoteReg(back_engine, m, arg);
+                                if (ESplit::g_owed_shader_rule &&
+                                    (back_engine == nullptr || back_engine->execution_mask[m])) {
+                                    other_upload.NoteExec(back_engine, m, arg);
+                                }
+                            }
                         }
                     }
-                    struct EngineJob {
-                        GpuSplit* self;
-                        Tegra::Engines::EngineInterface* engine;
-                        const u64* entry;
-                    } const job{this, back_engine, entry};
-                    std::memcpy(ESplit::BeginAsync(ESplit::Hand::Async), &job, sizeof(job));
-                    ESplit::PostAsync([](void* raw) {
-                        EngineJob j;
-                        std::memcpy(&j, raw, sizeof(j));
-                        (void)j.self->ExecuteOnEngine(j.engine, j.entry);
-                    });
+                    ESplit::QueueEngineEntry(*this, back_engine, entry, size);
                     return size;
                 }
                 // Bit 1: a 3D method that ends in one rasterizer call runs here; the call goes to
@@ -5149,7 +5291,12 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                 return work.size;
             }
             if (info.cls == ESplit::Class::Join && ESplit::g_async) {
-                compute_upload.Reset();
+                if (info.channel) {
+                    compute_upload.Reset();
+                    other_upload.ResetAll();
+                } else {
+                    compute_upload.Reset();
+                }
                 // The queued mode's join entries by kind (the 10 s line's top 8).
                 const u64 head = entry[0];
                 const Kind kind = static_cast<Kind>(head & 0xf);
@@ -5161,10 +5308,14 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
             }
             const ESplit::JoinScope join{ESplit::Join::Entry, info.cls == ESplit::Class::Join};
             const size_t executed = Execute(entry, words);
-            if (info.cls == ESplit::Class::Join && ESplit::g_async &&
-                ESplit::KindOf(back_engine) == ESplit::EngineKind::Compute) {
-                compute_upload.SyncFromEngine(
-                    static_cast<const Tegra::Engines::KeplerCompute*>(back_engine));
+            if (info.cls == ESplit::Class::Join && ESplit::g_async) {
+                const ESplit::EngineKind ek = ESplit::KindOf(back_engine);
+                if (ek == ESplit::EngineKind::Compute) {
+                    compute_upload.SyncFromEngine(
+                        static_cast<const Tegra::Engines::KeplerCompute*>(back_engine));
+                } else if (ek == ESplit::EngineKind::Other) {
+                    other_upload.SyncFromEngine(back_engine);
+                }
             }
             return executed;
         };
