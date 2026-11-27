@@ -1151,11 +1151,19 @@ private:
         if (shared->removal_seq.load(std::memory_order_acquire) == seen_removal) {
             return;
         }
-        std::scoped_lock lock{shared->removal_mutex};
-        const u64 seq = shared->removal_seq.load(std::memory_order_relaxed);
-        if (seen_removal < shared->removal_base) {
-            ResetOwnTables(true);  // fell behind the log
-        } else {
+        constexpr size_t max_selective_removals = 8;
+        std::array<u64, max_selective_removals> removed_keys{};
+        size_t removed_count = 0;
+        bool selective = false;
+        {
+            std::scoped_lock lock{shared->removal_mutex};
+            const u64 seq = shared->removal_seq.load(std::memory_order_relaxed);
+            if (seen_removal < shared->removal_base) {
+                seen_removal = seq;
+                ResetOwnTables(true);  // fell behind the log
+                return;
+            }
+            const u64 delta = seq - seen_removal;
             if (conf.HasOptimization(OptimizationFlag::FastDispatch) && emitter.fast_dispatch_table_lookup_in != nullptr) {
                 for (u64 i = seen_removal; i < seq; ++i) {
                     const u64 key = shared->removal_log[size_t(i - shared->removal_base)];
@@ -1163,11 +1171,47 @@ private:
                     if (entry.location_descriptor == key) {
                         entry = {};
                     }
+                    if (removed_count < max_selective_removals) {
+                        removed_keys[removed_count++] = key;
+                    }
+                }
+            } else if (delta <= max_selective_removals) {
+                for (u64 i = seen_removal; i < seq; ++i) {
+                    removed_keys[removed_count++] = shared->removal_log[size_t(i - shared->removal_base)];
                 }
             }
+            selective = delta <= max_selective_removals;
+            seen_removal = seq;
+        }
+        if (selective) {
+            // Selective invalidation keeps 99.9%+ of cached indirect branch targets and RSB
+            // entries warm across isolated fastmem faults instead of wiping 1 MiB of slots.
+            if (indirect_slots != nullptr) {
+                const size_t used = (std::min)(emitter.indirect_slots_used.load(std::memory_order_relaxed),
+                                               A64EmitX64::indirect_slot_capacity);
+                for (size_t s = 0; s < used; ++s) {
+                    const u64 slot_desc = indirect_slots[s].location_descriptor;
+                    for (size_t r = 0; r < removed_count; ++r) {
+                        if (slot_desc == removed_keys[r]) {
+                            indirect_slots[s] = {};
+                            break;
+                        }
+                    }
+                }
+            }
+            for (size_t i = 0; i < A64JitState::RSB_SIZE; ++i) {
+                const u64 desc = jit_state.rsb_location_descriptors[i];
+                for (size_t r = 0; r < removed_count; ++r) {
+                    if (desc == removed_keys[r]) {
+                        jit_state.rsb_location_descriptors[i] = 0xFFFFFFFFFFFFFFFFull;
+                        jit_state.rsb_codeptrs[i] = 0;
+                        break;
+                    }
+                }
+            }
+        } else {
             ResetOwnTables(false);
         }
-        seen_removal = seq;
     }
 
     void ResetOwnTables(bool everything) {

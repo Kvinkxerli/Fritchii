@@ -86,6 +86,7 @@
 #include <string>
 #include <thread>
 #include <type_traits>
+#include <utility>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -147,7 +148,7 @@ void Pause() noexcept {
 #endif
 }
 
-constexpr u64 Slots = 512;         ///< hand-over ring
+constexpr u64 Slots = 1024;        ///< hand-over ring
 constexpr int MaxDepth = 64;       ///< FRITCHII_ESPLIT_DEPTH's cap (draw tails ahead)
 constexpr u64 SampleMask = 63;     ///< 1 hand-over in 64 compared (or hashed)
 constexpr size_t HandCount = static_cast<size_t>(Hand::Count);
@@ -240,8 +241,9 @@ struct Job {
     void (*function)(void*);
     void* argument; ///< lockstep: E1's; async: the payload below
     u64 seq;
-    u64 position; ///< ring A position of the entry the work belongs to
-    u64 hash;     ///< async draw, sampled: E1's hash of what the fill reads
+    u64 position;       ///< ring A position of the entry the work belongs to
+    u64 store_position; ///< deferred StoreConsumed position run after job work (0 = none)
+    u64 hash;           ///< async draw, sampled: E1's hash of what the fill reads
     HandInfo info;
     RecordKind record_kind;
     u32 record_bytes;
@@ -458,11 +460,24 @@ u32 g_eng_count{};
 Job* g_raster_open{};
 u32 g_raster_count{};
 std::array<Raster, MaxRasterBatch> g_raster_ops{};
+u64 g_pending_store_position{};
+[[nodiscard]] Job* CurrentOpenJob() noexcept {
+    if (g_cb_open != nullptr) {
+        return g_cb_open;
+    }
+    if (g_eng_open != nullptr) {
+        return g_eng_open;
+    }
+    if (g_raster_open != nullptr) {
+        return g_raster_open;
+    }
+    return g_open;
+}
 void PostEngineBatch() noexcept;
 void PostRasterBatch() noexcept;
 void PostPendingBatches() noexcept;
-std::chrono::nanoseconds g_e1_poll{std::chrono::microseconds{50}};
-std::chrono::nanoseconds g_hold_poll{std::chrono::microseconds{20}};
+std::chrono::nanoseconds g_e1_poll{std::chrono::microseconds{10}};
+std::chrono::nanoseconds g_hold_poll{std::chrono::microseconds{4}};
 // E2's own
 u64 g_e2_last_seq{};
 u64 g_e2_last_position{};
@@ -478,15 +493,14 @@ u64 g_e2_bind_seq{};
 u64 g_e2_bind_timer{}; ///< E2: bind jobs seen (every 64th body timed)
 u64 g_bind_order_logged{};
 u64 g_bind_drop_logged{};
-std::chrono::nanoseconds g_e2_poll{std::chrono::microseconds{20}};
+std::chrono::nanoseconds g_e2_poll{std::chrono::microseconds{4}};
 
-/// E1 polls up to 200 us for a lockstep hand-over (the work is a few us; a sleep and a wake
-/// would cost more than the work), up to 20 us in S2 (where it waits only for room or a drain:
-/// sleeping waits, so the rest of the machine does not grow). E2 polls up to 50 us for the next
-/// job in S1, 20 us in S2.
-constexpr std::chrono::nanoseconds E1PollLimit{std::chrono::microseconds{200}};
-constexpr std::chrono::nanoseconds AsyncPollLimit{std::chrono::microseconds{20}};
-constexpr std::chrono::nanoseconds E2PollLimit{std::chrono::microseconds{50}};
+/// E1 polls up to 20 us for a lockstep hand-over (a spin longer than ~10 us burns heat on a hot
+/// P-core pair), up to 4 us in S2 (where it waits only for room or a drain). E2 polls up to 10 us
+/// for the next job in S1, 4 us in S2.
+constexpr std::chrono::nanoseconds E1PollLimit{std::chrono::microseconds{20}};
+constexpr std::chrono::nanoseconds AsyncPollLimit{std::chrono::microseconds{4}};
+constexpr std::chrono::nanoseconds E2PollLimit{std::chrono::microseconds{10}};
 
 [[nodiscard]] bool Sample() noexcept {
     u32 x = g_rng;
@@ -671,13 +685,15 @@ void RunJob(Job& job) {
     const u64 mark = watch_writes ? WriteMark() : 0;
     // FRITCHII_ESPLIT_BIND_BATCH's dry count: a bind job's body, 1 in 64 (the rest is the job's
     // own cost, what packing saves).
-    if (job.info.hand == Hand::Bind && (++g_e2_bind_timer & SampleMask) == 0) [[unlikely]] {
-        const u64 body_start = Profile::Ticks();
-        job.function(job.argument);
-        Bump(g_e2.bind_job_body_ticks, Profile::Ticks() - body_start);
-        Bump(g_e2.bind_job_bodies);
-    } else {
-        job.function(job.argument);
+    if (job.function != nullptr) {
+        if (job.info.hand == Hand::Bind && (++g_e2_bind_timer & SampleMask) == 0) [[unlikely]] {
+            const u64 body_start = Profile::Ticks();
+            job.function(job.argument);
+            Bump(g_e2.bind_job_body_ticks, Profile::Ticks() - body_start);
+            Bump(g_e2.bind_job_bodies);
+        } else {
+            job.function(job.argument);
+        }
     }
     if (watch_writes && WriteMark() != mark) [[unlikely]] {
         Bump(g_e2.async_writes);
@@ -689,6 +705,9 @@ void RunJob(Job& job) {
                           : job.info.cb_size != nullptr ? *job.info.cb_size
                                                         : 0;
         ThreadCbAdvance(words);
+    }
+    if (job.store_position != 0) [[unlikely]] {
+        GpuSplit::Get().StoreConsumed(job.store_position);
     }
     // Lockstep: the state goes back to E1 with the job. Async: E1 moved on; E2's copy is dropped
     // (the next job installs its own).
@@ -934,7 +953,7 @@ void HoldE1() noexcept {
     const u64 start = Profile::Ticks();
     u32 spins = 0;
     while (!g.e1_parked.load(std::memory_order_seq_cst)) {
-        if (++spins < 4096) {
+        if (++spins < 128) {
             Pause();
         } else {
             std::this_thread::yield();
@@ -1037,8 +1056,10 @@ void RunRasterBatch(void* raw) {
 void RunEngineBatch(void* raw) {
     EngineBatch b;
     std::memcpy(&b, raw, sizeof(b));
+    const u64 base = t_e2_position;
     const u64* entry = b.entry;
     for (u32 i = 0; i < b.count; ++i) {
+        t_e2_position = base + static_cast<u64>(entry - b.entry);
         entry += ESplitEngineAccess::ExecuteOnEngine(*b.self, b.engine, entry);
     }
 }
@@ -1093,6 +1114,9 @@ void WaitDone(u64 seq) {
 void WaitDrained() {
     PostPendingBatches(); // S4: any open record/batch first, so "drained" includes it
     WaitDone(g_next_seq - 1);
+    if (g_pending_store_position != 0) {
+        GpuSplit::Get().StoreConsumed(std::exchange(g_pending_store_position, 0));
+    }
 }
 
 /// E1 in S2 before E2's work runs on the engine (E2 drained): VertexInput raises, the flags.
@@ -1124,6 +1148,7 @@ Job& TakeSlot(bool draw_tail) {
     Job& job = g.jobs[seq % Slots];
     job.seq = seq;
     job.position = GpuSplit::Get().BackEntryPosition();
+    job.store_position = std::exchange(g_pending_store_position, 0);
     job.record_kind = RecordKind::None;
     job.record_bytes = 0;
     job.sample = false;
@@ -1505,6 +1530,7 @@ void StopE2() {
         return;
     }
     WaitDrained();
+    g_pending_store_position = 0;
     g_thread = false;
     g_async = false;
     g_cb_async = false;
@@ -1521,9 +1547,9 @@ void ThreadBatch() noexcept {
     if (!g_thread) {
         return;
     }
-    // Default 52: the queued mode; 0 = S1's lockstep (the check mode).
+    // Default 36: keeps hand-over ring headroom on Switch 2 titles; 0 = S1's lockstep.
     int depth = VideoCore::Nx2Debug::SwitchValue(VideoCore::Nx2Debug::g_esplit_depth,
-                                                 "FRITCHII_ESPLIT_DEPTH", 52);
+                                                 "FRITCHII_ESPLIT_DEPTH", 36);
     depth = std::clamp(depth, 0, MaxDepth);
     if (depth != g_depth) [[unlikely]] {
         SetDepth(depth);
@@ -1810,6 +1836,9 @@ bool WaitE2IdleOrImpl(bool (*more)(void*), void* argument) noexcept {
     bool woken = false;
     {
         const CauseScope cause{static_cast<size_t>(Join::Idle)};
+        if (g_pending_store_position != 0) {
+            QueueStore(std::exchange(g_pending_store_position, 0), true);
+        }
         PostPendingBatches();
         // E2 bumps E1's wake word (after every 8th job, each draw tail and when it ran out of
         // jobs) while E1 sleeps: `more` is asked again then.
@@ -2446,6 +2475,53 @@ void QueueEngineEntry(VideoCommon::GpuSplit& split, Tegra::Engines::EngineInterf
     g_eng_end = entry + words;
     g_eng_count = 1;
     ++g_e1.hands[static_cast<size_t>(Hand::Async)];
+}
+
+void QueueStore(u64 position, bool urgent) noexcept {
+    if (!g_async || t_role != 1 || t_join != 0) {
+        GpuSplit::Get().StoreConsumed(position);
+        return;
+    }
+    if (Job* const open = CurrentOpenJob()) {
+        if (position > open->store_position) {
+            open->store_position = position;
+        }
+        g_pending_store_position = 0;
+        if (urgent) {
+            PostPendingBatches();
+        }
+        return;
+    }
+    if (!urgent && position != 0) {
+        if (position > g_pending_store_position) {
+            g_pending_store_position = position;
+        }
+        return;
+    }
+    g_pending_store_position = 0;
+    if (void* const payload = BeginAsync(Hand::Store); payload != nullptr) {
+        g_open->store_position = position;
+        if (position == 0) {
+            struct StoreZero {
+                GpuSplit* self;
+                u64 position;
+            } const store{&GpuSplit::Get(), 0};
+            std::memcpy(payload, &store, sizeof(store));
+            PostAsync([](void* raw) {
+                StoreZero s{};
+                std::memcpy(&s, raw, sizeof(s));
+                s.self->StoreConsumed(s.position);
+            });
+        } else {
+            PostAsync(nullptr);
+        }
+    } else {
+        GpuSplit::Get().StoreConsumed(position);
+    }
+}
+
+void DiscardPendingStore() noexcept {
+    g_pending_store_position = 0;
 }
 
 void WaitConditionImpl(const std::atomic<u64>& done_seq, u64 target_seq) noexcept {

@@ -291,7 +291,7 @@ constexpr std::pair<const char*, const char*> BuiltinSwitches[] = {
     {"FRITCHII_FRONT_RAN_READS", "1"},
     {"FRITCHII_VERTEX_INPUT_COMPACT", "1"},
     {"FRITCHII_BIND_ADDR_MEMO", "1"},
-    {"FRITCHII_WORKER_SPIN", "2"},
+    {"FRITCHII_WORKER_SPIN", "0"},
     {"FRITCHII_CB_WORDS_BLOCK", "1"},
     // 2026-11-14: uniform bank pages nobody flagged as written are not compared again. Market
     // toggle 61.3 -> 62.5 fps, 1% low 43.5 -> 45.5, 0.1% low 32.8 -> 37.4; FLAGGED=2 verify: never
@@ -309,7 +309,7 @@ constexpr std::pair<const char*, const char*> BuiltinSwitches[] = {
     {"FRITCHII_HOSTTIMING_OFF_GPU", "1"},
     {"FRITCHII_DLSS_LOW_VRAM_CNN", "1"},
     // Recompiler
-    {"FRITCHII_JIT_INDIRECT_CACHE", "2"},
+    {"FRITCHII_JIT_INDIRECT_CACHE", "3"},
     {"FRITCHII_JIT_RSQRT_ZERO", "2"},
     {"FRITCHII_JIT_NO_FRAME_POINTER", "1"},
     {"FRITCHII_JIT_FLAG_BRANCH", "2"},
@@ -319,6 +319,8 @@ constexpr std::pair<const char*, const char*> BuiltinSwitches[] = {
     {"FRITCHII_JIT_INLINE_CNTPCT", "1"},
     {"FRITCHII_JIT_STATE_REFS", "1"},
     {"FRITCHII_JIT_SHARED", "1"},
+    {"FRITCHII_JIT_SHARED_FASTMEM_MARKS", "1"},
+    {"FRITCHII_JIT_CHEAP_BARRIERS", "1"},
     {"FRITCHII_STORE_MEMO", "2"},
     // GPU front and back
     {"EDEN_NX2_EXP37", "1"},
@@ -404,7 +406,8 @@ constexpr std::pair<const char*, const char*> BuiltinSwitches[] = {
     {"FRITCHII_FILL_BRACKET_LEAN", "1"},  {"FRITCHII_ONEF_MESH_EMU_ASYNC", "1"},
     {"FRITCHII_ESPLIT", "1"},             {"FRITCHII_ESPLIT_FLUSH_ASYNC", "1"},
     {"FRITCHII_ESPLIT_BIND_BATCH", "1"},  {"FRITCHII_E2C_ON_E", "1"},
-    {"FRITCHII_ASTC_HELD_DEFER", "1"},
+    {"FRITCHII_ASTC_HELD_DEFER", "1"},    {"FRITCHII_ONEF_R_SPIN", "512"},
+    {"FRITCHII_ONEF_E_SPIN", "512"},
 #ifdef _WIN32
     // Tested on Windows only (the Linux test builds ran without them).
     {"FRITCHII_JIT_PIN", "1"},            {"FRITCHII_JIT_PIN_REGS", "x8,x0"},

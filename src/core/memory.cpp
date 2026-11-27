@@ -1172,12 +1172,16 @@ struct Memory::Impl {
     }
 
     /// FRITCHII_STORE_MEMO: one per core (the last one also for the threads that are not cores,
-    /// under sys_core_guard as the rest of that core's state). `block`: device address >> 6 of the
-    /// last store whose full path ran with a memo kept, ~0 = none; `epoch`: g_store_memo_epoch
-    /// read before that path. Counters: written by the owner (load and store), read by the log.
+    /// under sys_core_guard as the rest of that core's state). 8 direct-mapped 64-byte block entries
+    /// keep interleaved writes on the same active page hitting; `block`: device address >> 6,
+    /// ~0 = none; `epoch`: g_store_memo_epoch read before that path.
     struct alignas(64) StoreMemo {
-        u64 block{~u64{0}};
-        u64 epoch{};
+        struct Entry {
+            u64 block{~u64{0}};
+            u64 epoch{};
+        };
+        static constexpr size_t Slots = 8;
+        std::array<Entry, Slots> entries{};
         std::atomic<u64> stores{};       ///< trapped stores looked at (each device address)
         std::atomic<u64> hits{};         ///< of them the memo serves (=1: would serve)
         std::atomic<u64> epoch_misses{}; ///< same block, but a mark may have been taken since
@@ -1291,24 +1295,29 @@ struct Memory::Impl {
         gpu_device_memory->ApplyOpOnPointer(p, scratch_buffers[core], [&](DAddr address) {
             u64 memo_epoch = 0;
             bool memo_keepable = false;
-            if (memo_mode != 0) [[unlikely]] {
+            if (memo_mode != 0) [[likely]] {
                 memo_epoch = Common::g_store_memo_epoch.load(std::memory_order_seq_cst);
                 const u64 block = address >> 6;
                 const bool one_block =
                     address != 0 && size != 0 && ((address + size - 1) >> 6) == block;
                 memo_keepable = one_block && (memo_epoch & Common::StoreMemoActiveMask) == 0;
                 CountStoreMemo(memo.stores);
-                if (one_block && memo.block == block) {
-                    if (memo.epoch == memo_epoch &&
-                        rasterizer_write_areas[core].last_address == (address >> YUZU_PAGEBITS) &&
-                        !VideoCommon::WriteTrack::g_armed.load(std::memory_order_relaxed)) {
-                        CountStoreMemo(memo.hits);
-                        if (memo_mode == 2) {
-                            Common::UniformKeepPages::RecordGuestStore(address, size);
-                            return;
+                if (one_block) {
+                    const StoreMemo::Entry& entry =
+                        memo.entries[static_cast<size_t>(block & (StoreMemo::Slots - 1))];
+                    if (entry.block == block) {
+                        if (entry.epoch == memo_epoch &&
+                            rasterizer_write_areas[core].last_address ==
+                                (address >> YUZU_PAGEBITS) &&
+                            !VideoCommon::WriteTrack::g_armed.load(std::memory_order_relaxed)) {
+                            CountStoreMemo(memo.hits);
+                            if (memo_mode == 2) {
+                                Common::UniformKeepPages::RecordGuestStore(address, size);
+                                return;
+                            }
+                        } else {
+                            CountStoreMemo(memo.epoch_misses);
                         }
-                    } else {
-                        CountStoreMemo(memo.epoch_misses);
                     }
                 }
                 if ((memo.stores.load(std::memory_order_relaxed) & 0xffff) == 0) [[unlikely]] {
@@ -1370,11 +1379,14 @@ struct Memory::Impl {
             // last_address stays on the page after its GPU-written state is gone, so these
             // writes can land on pages the buffer cache holds as clean until the next gather.
             g_collected_write_pages.Mark(address, size);
-            if (memo_mode != 0) [[unlikely]] {
+            if (memo_mode != 0) [[likely]] {
                 // Every mark of this block is set now, none taken since memo_epoch was read
                 // (a clear in between moves the epoch, and the next store misses).
-                memo.block = memo_keepable && no_landing ? address >> 6 : ~u64{0};
-                memo.epoch = memo_epoch;
+                const u64 block = address >> 6;
+                StoreMemo::Entry& entry =
+                    memo.entries[static_cast<size_t>(block & (StoreMemo::Slots - 1))];
+                entry.block = memo_keepable && no_landing ? block : ~u64{0};
+                entry.epoch = memo_epoch;
             }
         });
     }

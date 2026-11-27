@@ -398,10 +398,15 @@ private:
 /// E1: the open constant buffer record goes to E2 now. Also done before any other hand-over,
 /// drain, join, push or wait of E1's, so nothing E1 or the front does later can pass it.
 void PostCbWrites() noexcept;
-/// E1: queues a contiguous compute/other engine entry for E2, coalescing consecutive entries on
-/// the same engine into a single async job.
+/// E1: queues a contiguous compute/other engine entry (or nullptr-engine call) for E2,
+/// coalescing consecutive entries on the same engine into a single async job.
 void QueueEngineEntry(VideoCommon::GpuSplit& split, Tegra::Engines::EngineInterface* engine,
                       const u64* entry, std::size_t words) noexcept;
+/// E1: records `GpuSplit::StoreConsumed(position)` to run on E2 in job order. Non-urgent advances
+/// coalesce onto the open/next job so `PostPendingBatches` is not flushed prematurely.
+void QueueStore(u64 position, bool urgent) noexcept;
+/// E1: drops any deferred store position when an immediately following BatchEnd job supersedes it.
+void DiscardPendingStore() noexcept;
 /// E1: waits until `done_seq >= target_seq` without draining unrelated later jobs.
 void WaitConditionImpl(const std::atomic<u64>& done_seq, u64 target_seq) noexcept;
 inline void WaitCondition(const std::atomic<u64>& done_seq, u64 target_seq) noexcept {

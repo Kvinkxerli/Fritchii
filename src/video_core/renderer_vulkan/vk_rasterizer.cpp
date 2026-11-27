@@ -7918,18 +7918,23 @@ bool RasterizerVulkan::OneFollowerGatherOnEngine(
         return false;
     }
     // fable_b 12.3 fix 5: R's half is the texture and shader caches (ApplyGatherOtherHalf; the
-    // query cache is not in a gather). No range on their pages: it does nothing, and E applies
-    // the buffer half (ApplyGatherBufferHalf, the served gather's). The guest's writes are in
-    // memory before the take, and R fences between an image's filter mark and its upload
-    // (WrittenAheadOfRender): R either uploads the written bytes or its mark is seen here.
+    // query cache is not in a gather). Collect only the ranges that touch their filters: the buffer
+    // half (E's cache) still runs on E without taking `buffer_cache.mutex` on R or lending all
+    // unrelated ranges, and only the filtered R ranges lend when present.
+    boost::container::small_vector<std::pair<DAddr, u64>, 16> hit_ranges;
     for (const auto& [addr, size] : ranges) {
         if (addr != 0 && size != 0 &&
             (texture_cache.page_filter.Any(addr, size) ||
              pipeline_cache.page_filter.Any(addr, size))) {
-            OneF::CountInvalidation(OneF::InvalKind::GatherLent);
-            OneF::CountLentGatherRanges(ranges.size());
-            return false;
+            hit_ranges.emplace_back(addr, size);
         }
+    }
+    if (!hit_ranges.empty() &&
+        (Common::WriteRing::g_on.load(std::memory_order_relaxed) ||
+         VideoCommon::MemStageShadow::g_on.load(std::memory_order_relaxed))) {
+        OneF::CountInvalidation(OneF::InvalKind::GatherLent);
+        OneF::CountLentGatherRanges(ranges.size());
+        return false;
     }
     for (const auto& [addr, size] : ranges) {
         mem_stage.NoteCpuMark(addr, size);
@@ -7940,6 +7945,17 @@ bool RasterizerVulkan::OneFollowerGatherOnEngine(
     {
         std::scoped_lock lock{buffer_cache.mutex};
         (void)ApplyGatherBufferHalf(ranges);
+    }
+    if (!hit_ranges.empty()) {
+        OneF::CountInvalidation(OneF::InvalKind::GatherLent);
+        OneF::CountLentGatherRanges(hit_ranges.size());
+        auto r_half = [this, &hit_ranges] {
+            ApplyGatherOtherHalf(
+                std::span<const std::pair<DAddr, u64>>{hit_ranges.data(), hit_ranges.size()});
+        };
+        OneF::SetLendSite("gather, R's half");
+        OneF::Lend(OneF::LentOp::Invalidation, r_half);
+        return true;
     }
     OneF::CountInvalidation(OneF::InvalKind::GatherOnEngine);
     return true;

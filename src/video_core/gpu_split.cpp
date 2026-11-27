@@ -3811,10 +3811,11 @@ size_t GpuSplit::Execute(const u64* entry, size_t words) {
             (MemoryStageLink::RingActive() || MemoryStageLink::Get().ReleasePending() ||
              MemoryStageLink::Get().PassPending())) [[unlikely]] {
             MemoryStageLink& link = MemoryStageLink::Get();
+            const u64 position = BackEntryPosition();
             const bool passed =
-                link.PassPending() && link.BackPassRecord(back_entry_position) != nullptr;
+                link.PassPending() && link.BackPassRecord(position) != nullptr;
             if (!passed && (MemoryStageLink::RingActive() || link.ReleasePending()) &&
-                link.BackTakeRelease(back_entry_position)) {
+                link.BackTakeRelease(position)) {
                 return 2 + payload;
             }
         }
@@ -3987,6 +3988,8 @@ size_t GpuSplit::ExecuteOnEngine(Tegra::Engines::EngineInterface* engine, const 
         engine->ApplyPairs(*system, entry + 1, count);
         return 1 + size_t{count};
     }
+    case Kind::Call:
+        return Execute(entry, PlainEntrySize(head));
     default:
         return PlainEntrySize(head);
     }
@@ -5222,17 +5225,7 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                                 entry[2 + static_cast<size_t>(StageReleaseWord::Memory)]),
                             entry[2 + static_cast<size_t>(StageReleaseWord::Address)], 16);
                     }
-                    struct CallJob {
-                        GpuSplit* self;
-                        const u64* entry;
-                        size_t size;
-                    } const job{this, entry, size};
-                    std::memcpy(ESplit::BeginAsync(ESplit::Hand::Async), &job, sizeof(job));
-                    ESplit::PostAsync([](void* raw) {
-                        CallJob j;
-                        std::memcpy(&j, raw, sizeof(j));
-                        (void)j.self->Execute(j.entry, j.size);
-                    });
+                    ESplit::QueueEngineEntry(*this, nullptr, entry, size);
                     return size;
                 }
                 // Bit 2: a compute or 2D/DMA/inline engine entry goes to E2 whole, the engine by value.
@@ -5434,28 +5427,6 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
             }
             return executed;
         };
-        // FRITCHII_ESPLIT_DEPTH > 0: `consumed` is stored at E2's place, by an async job (the
-        // front's waits and ring A's room follow E2). False: store it here.
-        const auto esplit_store = [this, esplit_thread](u64 position) {
-            if (!esplit_thread) {
-                return false;
-            }
-            void* const payload = ESplit::BeginAsync(ESplit::Hand::Store);
-            if (payload == nullptr) {
-                return false;
-            }
-            struct Store {
-                GpuSplit* self;
-                u64 position;
-            } const store{this, position};
-            std::memcpy(payload, &store, sizeof(store));
-            ESplit::PostAsync([](void* raw) {
-                Store s;
-                std::memcpy(&s, raw, sizeof(s));
-                s.self->StoreConsumed(s.position);
-            });
-            return true;
-        };
         while (read_position != available) {
             const size_t index = read_position & RingMask;
             if (esplit_thread) [[unlikely]] {
@@ -5586,7 +5557,10 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                 if (entry_price) [[unlikely]] {
                     FritchiiPrice::BackReached(read_position);
                 }
-                if (!esplit_store(read_position)) {
+                const bool urgent = read_position >= wait_target.load(std::memory_order_relaxed);
+                if (esplit_thread) {
+                    ESplit::QueueStore(read_position, urgent);
+                } else {
                     StoreConsumed(read_position);
                 }
                 last_store = read_position;
@@ -5604,6 +5578,7 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
             if (entry_price) [[unlikely]] {
                 FritchiiPrice::BackReached(read_position);
             }
+            ESplit::DiscardPendingStore();
             struct BatchEnd {
                 GpuSplit* self;
                 u64 position;
