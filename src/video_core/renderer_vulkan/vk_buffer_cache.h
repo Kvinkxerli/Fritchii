@@ -160,9 +160,13 @@ public:
     /// The clock's stamp (SeamClock: a scheduler tick, or a packet number with
     /// FRITCHII_MEMSTAGE_TICKS). IsFree, Wait, WaitSubmittedTick, WaitForHostRead and IsFreeNow
     /// take these, as does what SubmitForHostRead returns.
-    u64 CurrentTick();
+    [[nodiscard]] u64 CurrentTick() noexcept {
+        return clock.Now();
+    }
 
-    bool IsFree(u64 tick);
+    [[nodiscard]] bool IsFree(u64 tick) noexcept {
+        return clock.IsFree(tick);
+    }
 
     void Wait(u64 tick);
 

@@ -262,6 +262,12 @@ private:
         std::array<u64, 2> hashes{};
         std::vector<VideoCommon::HandleProgramRecord> records;
     };
+    struct ProgramMemoSlot {
+        const void* pipeline{};
+        ProgramMemo* memo{};
+    };
+    static constexpr size_t ProgramMemoCacheSize = 32;
+    std::array<ProgramMemoSlot, ProgramMemoCacheSize> program_memo_cache{};
     std::unordered_map<const void*, ProgramMemo> program_memos;
     /// The handle values of a draw whose pipeline has handle programs, with the cut at `mode`
     /// (FillGraphicsHandleValues' values in its order).

@@ -88,8 +88,12 @@ public:
         return regs.dest.Address();
     }
 
-    u32 GetUploadSize() const {
+    [[nodiscard]] u32 GetUploadSize() const {
         return copy_size;
+    }
+
+    [[nodiscard]] const MemoryManager& GetMemoryManager() const noexcept {
+        return memory_manager;
     }
 
 private:

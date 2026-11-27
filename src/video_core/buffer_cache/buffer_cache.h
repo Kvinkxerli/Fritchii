@@ -8488,21 +8488,39 @@ BufferId BufferCache<P>::FindBuffer(DAddr device_addr, u32 size, bool sparse_com
     if (device_addr == 0 || page >= page_table.size()) {
         return NULL_BUFFER_ID;
     }
+    const bool should_sync = Settings::IsGPUFenceBehaviorAccurate();
+    FindMemo& memo = find_memos[page & (find_memos.size() - 1)];
+    if (!should_sync && memo.page == page && memo.deletions == buffer_deletions &&
+        device_addr >= memo.begin && device_addr + size <= memo.end &&
+        (!sparse_compatible || memo.sparse_compatible)) {
+        return memo.buffer_id;
+    }
     const BufferId buffer_id = page_table[page];
     if (buffer_id) {
         Buffer& buffer = slot_buffers[buffer_id];
         if (buffer.IsInBounds(device_addr, size)) {
-            const bool should_sync = Settings::IsGPUFenceBehaviorAccurate();
             if (should_sync) {
                 SynchronizeBufferWrites(buffer);
             }
             bool usable = true;
+            bool is_sparse = false;
             if constexpr (requires { buffer.IsSparseCompatible(); }) {
-                if (sparse_compatible && !buffer.IsSparseCompatible()) {
+                is_sparse = buffer.IsSparseCompatible();
+                if (sparse_compatible && !is_sparse) {
                     usable = false;
                 }
             }
             if (usable) {
+                if (!should_sync) {
+                    memo = FindMemo{
+                        .page = page,
+                        .deletions = buffer_deletions,
+                        .begin = buffer.CpuAddr(),
+                        .end = buffer.CpuAddr() + buffer.SizeBytes(),
+                        .buffer_id = buffer_id,
+                        .sparse_compatible = is_sparse,
+                    };
+                }
                 return buffer_id;
             }
         }
@@ -9453,6 +9471,7 @@ void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, DAddr device_addr, u64
 
 template <class P>
 void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
+    ++buffer_deletions;
     VideoCommon::Churn::Add(VideoCommon::Churn::BuffersDeleted);
     if (MemStageStats::Enabled()) [[unlikely]] {
         MemStageStats::BufferDeleted(slot_buffers[buffer_id].SizeBytes());

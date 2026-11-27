@@ -35,6 +35,7 @@
 #include "video_core/engines/engine_interface.h"
 #include "video_core/engines/fermi_2d.h"
 #include "video_core/engines/kepler_compute.h"
+#include "video_core/engines/kepler_memory.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/maxwell_dma.h"
 #include "video_core/fritchii_e_split.h"
@@ -4524,6 +4525,298 @@ void GpuSplit::StoreConsumed(u64 position) {
     NotifyFront();
 }
 
+namespace {
+
+// Shared fixed-capacity MRU/FIFO cache keyed by EngineInterface* so per-engine shadows
+// persist across channel switches and ring batches.
+template <typename Slot, size_t MaxSlots = 4>
+struct EngineSlotCache {
+    std::array<Slot, MaxSlots> slots{};
+    size_t active{};
+    size_t next_evict{};
+
+    Slot* Find(const Tegra::Engines::EngineInterface* e) noexcept {
+        if (e == nullptr) {
+            return nullptr;
+        }
+        if (slots[active].engine == e) {
+            return &slots[active];
+        }
+        for (size_t i = 0; i < MaxSlots; ++i) {
+            if (slots[i].engine == e) {
+                active = i;
+                return &slots[i];
+            }
+        }
+        return nullptr;
+    }
+    template <typename InitFn>
+    Slot& Acquire(const Tegra::Engines::EngineInterface* e, InitFn&& init) noexcept {
+        if (Slot* existing = Find(e)) {
+            return *existing;
+        }
+        for (size_t i = 0; i < MaxSlots; ++i) {
+            if (slots[i].engine == nullptr) {
+                active = i;
+                slots[i] = Slot{};
+                slots[i].engine = e;
+                init(slots[i]);
+                return slots[i];
+            }
+        }
+        const size_t idx = next_evict;
+        next_evict = (next_evict + 1) % MaxSlots;
+        active = idx;
+        slots[idx] = Slot{};
+        slots[idx].engine = e;
+        init(slots[idx]);
+        return slots[idx];
+    }
+};
+
+struct LinearUploadSlot {
+    const Tegra::Engines::EngineInterface* engine{};
+    u32 line_length_in{};
+    u32 line_count{1};
+    u32 pitch{};
+    u32 addr_high{};
+    u32 addr_low{};
+    bool have_high{};
+    bool have_low{};
+    bool linear{true};
+
+    void SyncFrom(const Tegra::Engines::Upload::Registers& upload, bool is_linear) noexcept {
+        line_length_in = upload.line_length_in;
+        line_count = upload.line_count;
+        pitch = upload.dest.pitch;
+        addr_high = upload.dest.address_high;
+        addr_low = upload.dest.address_low;
+        have_high = true;
+        have_low = true;
+        linear = is_linear;
+    }
+    bool NoteUploadWrite(const Tegra::MemoryManager& memory, u32 word_count) const noexcept {
+        if (!have_high || !have_low || !linear) {
+            return false;
+        }
+        if (line_count > 1 && pitch == 0) {
+            return false;
+        }
+        const GPUVAddr addr = (GPUVAddr{addr_high} << 32) | addr_low;
+        const u64 min_bytes = u64{word_count} * sizeof(u32);
+        const u64 span = line_count <= 1
+                             ? std::max<u64>(min_bytes, line_length_in)
+                             : std::max<u64>(min_bytes,
+                                             u64{pitch} * u64{line_count - 1} +
+                                                 u64{line_length_in});
+        ESplit::NoteQueuedWrite(&memory, addr, span);
+        return true;
+    }
+};
+
+// Track linear compute upload destination on E1 across up to 4 compute engines so channel
+// switches don't lose state and inline QMD/uniform data_upload entries check shader pages.
+struct ComputeUploadTrack {
+    EngineSlotCache<LinearUploadSlot> cache{};
+
+    void SyncFromEngine(const Tegra::Engines::KeplerCompute* kc) noexcept {
+        if (kc == nullptr) {
+            return;
+        }
+        LinearUploadSlot& s = cache.Acquire(kc, [](LinearUploadSlot&) {});
+        s.SyncFrom(kc->regs.upload, kc->regs.exec_upload.linear != 0);
+    }
+    void NoteReg(const Tegra::Engines::EngineInterface* e, u32 m, u32 val) noexcept {
+        if (e == nullptr) {
+            return;
+        }
+        LinearUploadSlot& s = cache.Acquire(e, [](LinearUploadSlot&) {});
+        using Tegra::Engines::KeplerCompute;
+        if (m == KEPLER_COMPUTE_REG_INDEX(upload.line_length_in)) {
+            s.line_length_in = val;
+        } else if (m == KEPLER_COMPUTE_REG_INDEX(upload.line_count)) {
+            s.line_count = val;
+        } else if (m == KEPLER_COMPUTE_REG_INDEX(upload.dest.pitch)) {
+            s.pitch = val;
+        } else if (m == KEPLER_COMPUTE_REG_INDEX(upload.dest.address_high)) {
+            s.addr_high = val;
+            s.have_high = true;
+        } else if (m == KEPLER_COMPUTE_REG_INDEX(upload.dest.address_low)) {
+            s.addr_low = val;
+            s.have_low = true;
+        } else if (m == KEPLER_COMPUTE_REG_INDEX(exec_upload)) {
+            s.linear = (val & 1U) != 0;
+        }
+    }
+    bool IsLinear(const Tegra::Engines::EngineInterface* e) noexcept {
+        const LinearUploadSlot* s = cache.Find(e);
+        return s != nullptr && s->linear;
+    }
+    bool NoteDataUpload(Tegra::Engines::KeplerCompute* kc, u32 word_count) noexcept {
+        const LinearUploadSlot* s = cache.Find(kc);
+        return s != nullptr && s->NoteUploadWrite(kc->GetMemoryManager(), word_count);
+    }
+};
+
+// Track Fermi2D, MaxwellDMA and KeplerMemory destination registers on E1 per engine instance
+// so channel switches don't discard synced shadows or force shader-page joins.
+struct OtherUploadTrack {
+    struct F2dSlot {
+        const Tegra::Engines::EngineInterface* engine{};
+        std::array<u32, Tegra::Engines::Fermi2D::FrontCount> dst{};
+        u32 seen{};
+    };
+    struct DmaSlot {
+        const Tegra::Engines::EngineInterface* engine{};
+        std::unique_ptr<std::array<u32, 0x200>> regs;
+        bool synced{};
+    };
+    EngineSlotCache<F2dSlot> f2d_cache{};
+    EngineSlotCache<DmaSlot> dma_cache{};
+    EngineSlotCache<LinearUploadSlot> km_cache{};
+
+    static void SyncDmaSlot(DmaSlot& s, const Tegra::Engines::MaxwellDMA* dma) noexcept {
+        if (!s.regs) {
+            s.regs = std::make_unique<std::array<u32, 0x200>>();
+        }
+        dma->SyncShadowRegisters(*s.regs);
+        s.synced = true;
+    }
+    void SyncFromEngine(const Tegra::Engines::EngineInterface* e) noexcept {
+        if (e == nullptr) {
+            return;
+        }
+        if (const auto* f2d = dynamic_cast<const Tegra::Engines::Fermi2D*>(e)) {
+            F2dSlot& s = f2d_cache.Acquire(f2d, [](F2dSlot&) {});
+            f2d->SyncDstRegisters(s.dst);
+            s.seen = (1U << Tegra::Engines::Fermi2D::FrontCount) - 1U;
+        } else if (const auto* dma = dynamic_cast<const Tegra::Engines::MaxwellDMA*>(e)) {
+            DmaSlot& s = dma_cache.Acquire(dma, [](DmaSlot&) {});
+            SyncDmaSlot(s, dma);
+        } else if (const auto* km = dynamic_cast<const Tegra::Engines::KeplerMemory*>(e)) {
+            LinearUploadSlot& s = km_cache.Acquire(km, [](LinearUploadSlot&) {});
+            s.SyncFrom(km->regs.upload, km->regs.exec.linear != 0);
+        }
+    }
+    void NoteReg(const Tegra::Engines::EngineInterface* e, u32 m, u32 val) noexcept {
+        if (e == nullptr) {
+            return;
+        }
+        if (const auto* f2d = dynamic_cast<const Tegra::Engines::Fermi2D*>(e)) {
+            F2dSlot& s = f2d_cache.Acquire(f2d, [f2d](F2dSlot& slot) {
+                if (ESplit::E2Idle()) {
+                    f2d->SyncDstRegisters(slot.dst);
+                    slot.seen = (1U << Tegra::Engines::Fermi2D::FrontCount) - 1U;
+                }
+            });
+            constexpr u32 first = FERMI2D_REG_INDEX(dst);
+            if (m - first < Tegra::Engines::Fermi2D::FrontCount) {
+                s.dst[m - first] = val;
+                s.seen |= 1U << (m - first);
+            }
+        } else if (const auto* dma = dynamic_cast<const Tegra::Engines::MaxwellDMA*>(e)) {
+            DmaSlot& s = dma_cache.Acquire(dma, [dma](DmaSlot& slot) {
+                if (ESplit::E2Idle()) {
+                    SyncDmaSlot(slot, dma);
+                }
+            });
+            if (s.synced && m < s.regs->size()) {
+                (*s.regs)[m] = val;
+            }
+        } else if (const auto* km = dynamic_cast<const Tegra::Engines::KeplerMemory*>(e)) {
+            LinearUploadSlot& s = km_cache.Acquire(km, [](LinearUploadSlot&) {});
+            using Tegra::Engines::KeplerMemory;
+            if (m == KEPLERMEMORY_REG_INDEX(upload.line_length_in)) {
+                s.line_length_in = val;
+            } else if (m == KEPLERMEMORY_REG_INDEX(upload.line_count)) {
+                s.line_count = val;
+            } else if (m == KEPLERMEMORY_REG_INDEX(upload.dest.pitch)) {
+                s.pitch = val;
+            } else if (m == KEPLERMEMORY_REG_INDEX(upload.dest.address_high)) {
+                s.addr_high = val;
+                s.have_high = true;
+            } else if (m == KEPLERMEMORY_REG_INDEX(upload.dest.address_low)) {
+                s.addr_low = val;
+                s.have_low = true;
+            } else if (m == KEPLERMEMORY_REG_INDEX(exec)) {
+                s.linear = (val & 1U) != 0;
+            }
+        }
+    }
+    bool NoteKmDataUpload(const Tegra::Engines::KeplerMemory* km, u32 word_count) noexcept {
+        const LinearUploadSlot* s = km_cache.Find(km);
+        return s != nullptr && s->NoteUploadWrite(km->GetMemoryManager(), word_count);
+    }
+    void NoteExec(const Tegra::Engines::EngineInterface* e, u32 m, u32 val) noexcept {
+        if (!ESplit::g_owed_shader_rule) {
+            return;
+        }
+        if (e != nullptr) {
+            if (const auto* f2d = dynamic_cast<const Tegra::Engines::Fermi2D*>(e)) {
+                constexpr u32 blit_m = FERMI2D_REG_INDEX(pixels_from_memory.src_y0) + 1;
+                if (m != blit_m) {
+                    ESplit::NoteQueuedWriteAnywhere();
+                    return;
+                }
+                const F2dSlot* s = f2d_cache.Find(e);
+                GPUVAddr begin = 0;
+                u64 size = 0;
+                if (s == nullptr ||
+                    !Tegra::Engines::Fermi2D::ComputeDstRange(s->dst, s->seen, begin, size)) {
+                    ESplit::NoteQueuedWriteAnywhere();
+                    return;
+                }
+                ESplit::NoteQueuedWrite(&f2d->GetMemoryManager(), begin, size);
+                return;
+            }
+            if (const auto* dma = dynamic_cast<const Tegra::Engines::MaxwellDMA*>(e)) {
+                const DmaSlot* s = dma_cache.Find(e);
+                constexpr u32 launch_m = 0x300U / sizeof(u32);
+                if (s == nullptr || !s->synced || !s->regs || m != launch_m) {
+                    ESplit::NoteQueuedWriteAnywhere();
+                    return;
+                }
+                GPUVAddr sem_addr = 0;
+                u32 sem_payload = 0;
+                u32 sem_type = 0;
+                GPUVAddr dst_begin = 0;
+                u64 dst_size = 0;
+                const bool bounded = Tegra::Engines::MaxwellDMA::ComputeLaunchWriteRanges(
+                    *s->regs, val, sem_addr, sem_payload, sem_type, dst_begin, dst_size);
+                (void)sem_payload;
+                if (sem_type != 0) {
+                    ESplit::NoteQueuedWrite(&dma->GetMemoryManager(), sem_addr, 16);
+                }
+                if (!bounded) {
+                    ESplit::NoteQueuedWriteAnywhere();
+                    return;
+                }
+                ESplit::NoteQueuedWrite(&dma->GetMemoryManager(), dst_begin, dst_size);
+                return;
+            }
+            if (const auto* km = dynamic_cast<const Tegra::Engines::KeplerMemory*>(e)) {
+                using Tegra::Engines::KeplerMemory;
+                if (m == KEPLERMEMORY_REG_INDEX(exec)) {
+                    const LinearUploadSlot* s = km_cache.Find(e);
+                    if (s == nullptr || !s->linear) {
+                        ESplit::NoteQueuedWriteAnywhere();
+                    }
+                    return;
+                }
+                if (m == KEPLERMEMORY_REG_INDEX(data)) {
+                    if (!NoteKmDataUpload(km, 1)) {
+                        ESplit::NoteQueuedWriteAnywhere();
+                    }
+                    return;
+                }
+            }
+        }
+        ESplit::NoteQueuedWriteAnywhere();
+    }
+};
+
+} // namespace
+
 void GpuSplit::BackLoop(std::stop_token stop_token) {
     const Common::DkbCpuTrace::Registration cpu_trace{Common::DkbCpuTrace::Role::GpuBack};
     Common::SetCurrentThreadName("GPUBack");
@@ -4553,6 +4846,8 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
     // FRITCHII_MEMSTAGE_THREAD=2 (memory_stage_link.cpp): the stage reads the ring before the
     // back; the back's limit is the stage's `staged`, and each entry is lent or served.
     MemoryStageLink& link = MemoryStageLink::Get();
+    ComputeUploadTrack compute_upload{};
+    OtherUploadTrack other_upload{};
     while (!stop_token.stop_requested()) {
         Nx2Profile::Report("GPU back thread");
         // FRITCHII_SIM_CPU_SLOW: one stretch of work per batch of entries.
@@ -4888,199 +5183,6 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
             }
             return info;
         };
-        // Track linear compute upload destination on E1 so inline QMD/uniform data_upload entries
-        // check the shader page filter instead of forcing a Lookup join on every compute dispatch.
-        struct ComputeUploadTrack {
-            const Tegra::Engines::EngineInterface* engine{};
-            u32 line_length_in{};
-            u32 line_count{1};
-            u32 pitch{};
-            u32 addr_high{};
-            u32 addr_low{};
-            bool have_high{};
-            bool have_low{};
-            bool linear{true};
-
-            void Reset() noexcept {
-                engine = nullptr;
-                have_high = false;
-                have_low = false;
-                linear = true;
-            }
-            void SyncFromEngine(const Tegra::Engines::KeplerCompute* kc) noexcept {
-                if (kc == nullptr) {
-                    Reset();
-                    return;
-                }
-                engine = kc;
-                line_length_in = kc->regs.upload.line_length_in;
-                line_count = kc->regs.upload.line_count;
-                pitch = kc->regs.upload.dest.pitch;
-                addr_high = kc->regs.upload.dest.address_high;
-                addr_low = kc->regs.upload.dest.address_low;
-                have_high = true;
-                have_low = true;
-                linear = kc->regs.exec_upload.linear != 0;
-            }
-            void NoteReg(const Tegra::Engines::EngineInterface* e, u32 m, u32 val) noexcept {
-                if (e != engine) {
-                    Reset();
-                    engine = e;
-                }
-                using Tegra::Engines::KeplerCompute;
-                if (m == KEPLER_COMPUTE_REG_INDEX(upload.line_length_in)) {
-                    line_length_in = val;
-                } else if (m == KEPLER_COMPUTE_REG_INDEX(upload.line_count)) {
-                    line_count = val;
-                } else if (m == KEPLER_COMPUTE_REG_INDEX(upload.dest.pitch)) {
-                    pitch = val;
-                } else if (m == KEPLER_COMPUTE_REG_INDEX(upload.dest.address_high)) {
-                    addr_high = val;
-                    have_high = true;
-                } else if (m == KEPLER_COMPUTE_REG_INDEX(upload.dest.address_low)) {
-                    addr_low = val;
-                    have_low = true;
-                } else if (m == KEPLER_COMPUTE_REG_INDEX(exec_upload)) {
-                    linear = (val & 1U) != 0;
-                }
-            }
-            bool NoteDataUpload(Tegra::Engines::KeplerCompute* kc, u32 word_count) const noexcept {
-                if (kc != engine || !have_high || !have_low || !linear) {
-                    return false;
-                }
-                if (line_count > 1 && pitch == 0) {
-                    return false;
-                }
-                const GPUVAddr addr = (GPUVAddr{addr_high} << 32) | addr_low;
-                const u64 min_bytes = u64{word_count} * sizeof(u32);
-                const u64 span = line_count <= 1
-                                     ? std::max<u64>(min_bytes, line_length_in)
-                                     : std::max<u64>(min_bytes,
-                                                     u64{pitch} * u64{line_count - 1} +
-                                                         u64{line_length_in});
-                ESplit::NoteQueuedWrite(&kc->GetMemoryManager(), addr, span);
-                return true;
-            }
-        } compute_upload{};
-
-        // Track Fermi2D and MaxwellDMA destination registers on E1 so plain register writes skip
-        // NoteQueuedWriteAnywhere and launches check shader pages by exact range.
-        struct OtherUploadTrack {
-            const Tegra::Engines::EngineInterface* f2d_engine{};
-            std::array<u32, Tegra::Engines::Fermi2D::FrontCount> f2d_dst{};
-            u32 f2d_seen{};
-            const Tegra::Engines::EngineInterface* dma_engine{};
-            std::unique_ptr<std::array<u32, 0x200>> dma_regs;
-            bool dma_synced{};
-
-            void ResetAll() noexcept {
-                f2d_engine = nullptr;
-                f2d_seen = 0;
-                dma_engine = nullptr;
-                dma_synced = false;
-            }
-            void SyncFromEngine(const Tegra::Engines::EngineInterface* e) noexcept {
-                if (e == nullptr) {
-                    return;
-                }
-                if (const auto* f2d = dynamic_cast<const Tegra::Engines::Fermi2D*>(e)) {
-                    f2d_engine = e;
-                    f2d->SyncDstRegisters(f2d_dst);
-                    f2d_seen = (1U << Tegra::Engines::Fermi2D::FrontCount) - 1U;
-                } else if (const auto* dma = dynamic_cast<const Tegra::Engines::MaxwellDMA*>(e)) {
-                    dma_engine = e;
-                    if (!dma_regs) {
-                        dma_regs = std::make_unique<std::array<u32, 0x200>>();
-                    }
-                    dma->SyncShadowRegisters(*dma_regs);
-                    dma_synced = true;
-                }
-            }
-            void NoteReg(const Tegra::Engines::EngineInterface* e, u32 m, u32 val) noexcept {
-                if (e == nullptr) {
-                    return;
-                }
-                if (const auto* f2d = dynamic_cast<const Tegra::Engines::Fermi2D*>(e)) {
-                    if (e != f2d_engine) {
-                        f2d_engine = e;
-                        f2d_seen = 0;
-                        if (ESplit::E2Idle()) {
-                            f2d->SyncDstRegisters(f2d_dst);
-                            f2d_seen = (1U << Tegra::Engines::Fermi2D::FrontCount) - 1U;
-                        }
-                    }
-                    constexpr u32 first = FERMI2D_REG_INDEX(dst);
-                    if (m - first < Tegra::Engines::Fermi2D::FrontCount) {
-                        f2d_dst[m - first] = val;
-                        f2d_seen |= 1U << (m - first);
-                    }
-                } else if (const auto* dma = dynamic_cast<const Tegra::Engines::MaxwellDMA*>(e)) {
-                    if (!dma_regs) {
-                        dma_regs = std::make_unique<std::array<u32, 0x200>>();
-                    }
-                    if (e != dma_engine) {
-                        dma_engine = e;
-                        if (ESplit::E2Idle()) {
-                            dma->SyncShadowRegisters(*dma_regs);
-                            dma_synced = true;
-                        } else {
-                            dma_synced = false;
-                        }
-                    }
-                    if (dma_synced && m < dma_regs->size()) {
-                        (*dma_regs)[m] = val;
-                    }
-                }
-            }
-            void NoteExec(const Tegra::Engines::EngineInterface* e, u32 m, u32 val) const noexcept {
-                if (!ESplit::g_owed_shader_rule) {
-                    return;
-                }
-                if (e == f2d_engine && e != nullptr) {
-                    constexpr u32 blit_m = FERMI2D_REG_INDEX(pixels_from_memory.src_y0) + 1;
-                    if (m != blit_m) {
-                        ESplit::NoteQueuedWriteAnywhere();
-                        return;
-                    }
-                    GPUVAddr begin = 0;
-                    u64 size = 0;
-                    if (!Tegra::Engines::Fermi2D::ComputeDstRange(f2d_dst, f2d_seen, begin, size)) {
-                        ESplit::NoteQueuedWriteAnywhere();
-                        return;
-                    }
-                    const auto* f2d = static_cast<const Tegra::Engines::Fermi2D*>(e);
-                    ESplit::NoteQueuedWrite(&f2d->GetMemoryManager(), begin, size);
-                    return;
-                }
-                if (e == dma_engine && e != nullptr && dma_synced && dma_regs) {
-                    constexpr u32 launch_m = 0x300U / sizeof(u32);
-                    if (m != launch_m) {
-                        ESplit::NoteQueuedWriteAnywhere();
-                        return;
-                    }
-                    GPUVAddr sem_addr = 0;
-                    u32 sem_payload = 0;
-                    u32 sem_type = 0;
-                    GPUVAddr dst_begin = 0;
-                    u64 dst_size = 0;
-                    const bool bounded = Tegra::Engines::MaxwellDMA::ComputeLaunchWriteRanges(
-                        *dma_regs, val, sem_addr, sem_payload, sem_type, dst_begin, dst_size);
-                    (void)sem_payload;
-                    const auto* dma = static_cast<const Tegra::Engines::MaxwellDMA*>(e);
-                    if (sem_type != 0) {
-                        ESplit::NoteQueuedWrite(&dma->GetMemoryManager(), sem_addr, 16);
-                    }
-                    if (!bounded) {
-                        ESplit::NoteQueuedWriteAnywhere();
-                        return;
-                    }
-                    ESplit::NoteQueuedWrite(&dma->GetMemoryManager(), dst_begin, dst_size);
-                    return;
-                }
-                ESplit::NoteQueuedWriteAnywhere();
-            }
-        } other_upload{};
-
         // FRITCHII_ESPLIT=1: an E2 entry runs on E2 (E1 applies the sunk register writes first,
         // as Execute would first thing, and builds the record of E2's view); a join entry runs
         // here with E2 idle (S1) or drained (S2); an E1 entry runs here and hands its own E2
@@ -5168,7 +5270,7 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                                     compute_upload.NoteReg(back_engine, m, args[i]);
                                 }
                                 if (ESplit::g_owed_shader_rule && m == exec_m &&
-                                    !compute_upload.linear) {
+                                    !compute_upload.IsLinear(back_engine)) {
                                     ESplit::NoteQueuedWriteAnywhere();
                                 }
                             }
@@ -5204,13 +5306,23 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                             const bool exec =
                                 (head & Direct) != 0 || back_engine == nullptr ||
                                 back_engine->execution_mask[m];
-                            for (u32 i = 0; i < amount; ++i) {
-                                other_upload.NoteReg(back_engine, m, args[i]);
-                                if (ESplit::g_owed_shader_rule && exec) {
-                                    if ((head & Direct) != 0) {
-                                        ESplit::NoteQueuedWriteAnywhere();
-                                    } else {
-                                        other_upload.NoteExec(back_engine, m, args[i]);
+                            if (const auto* km =
+                                    dynamic_cast<const Tegra::Engines::KeplerMemory*>(back_engine);
+                                km != nullptr && m == KEPLERMEMORY_REG_INDEX(data) &&
+                                (head & Direct) == 0) {
+                                if (ESplit::g_owed_shader_rule &&
+                                    !other_upload.NoteKmDataUpload(km, amount)) {
+                                    ESplit::NoteQueuedWriteAnywhere();
+                                }
+                            } else {
+                                for (u32 i = 0; i < amount; ++i) {
+                                    other_upload.NoteReg(back_engine, m, args[i]);
+                                    if (ESplit::g_owed_shader_rule && exec) {
+                                        if ((head & Direct) != 0) {
+                                            ESplit::NoteQueuedWriteAnywhere();
+                                        } else {
+                                            other_upload.NoteExec(back_engine, m, args[i]);
+                                        }
                                     }
                                 }
                             }
@@ -5255,7 +5367,16 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                                               : nullptr);
                 }
                 const ESplit::JoinScope join{ESplit::Join::Entry, join_it};
-                return Execute(entry, words);
+                const size_t executed = Execute(entry, words);
+                if (join_it) {
+                    if (engine_kind == ESplit::EngineKind::Compute) {
+                        compute_upload.SyncFromEngine(
+                            static_cast<const Tegra::Engines::KeplerCompute*>(back_engine));
+                    } else if (engine_kind == ESplit::EngineKind::Other) {
+                        other_upload.SyncFromEngine(back_engine);
+                    }
+                }
+                return executed;
             }
             if (info.cls == ESplit::Class::E2) {
                 if (info.sink_first && back_engine != nullptr) {
@@ -5291,13 +5412,6 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                 return work.size;
             }
             if (info.cls == ESplit::Class::Join && ESplit::g_async) {
-                const ESplit::EngineKind join_ek = ESplit::KindOf(back_engine);
-                if (info.channel) {
-                    compute_upload.Reset();
-                    other_upload.ResetAll();
-                } else if (join_ek == ESplit::EngineKind::Compute) {
-                    compute_upload.Reset();
-                }
                 // The queued mode's join entries by kind (the 10 s line's top 8).
                 const u64 head = entry[0];
                 const Kind kind = static_cast<Kind>(head & 0xf);

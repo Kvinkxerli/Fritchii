@@ -2431,6 +2431,17 @@ private:
     void ResolveStorageBinding(size_t memo_stage, u32 index, Binding& binding, bool is_written,
                                std::vector<MultiRangeSegment>& pool);
 
+    struct FindMemo {
+        u64 page{~u64{0}};
+        u64 deletions{};
+        DAddr begin{};
+        DAddr end{};
+        BufferId buffer_id{};
+        bool sparse_compatible{};
+    };
+    std::array<FindMemo, 256> find_memos{};
+    u64 buffer_deletions = 0;
+
     /// EDEN_NX2_TABLE_POINTER_TRACE: last table entry and size bound per table pointer slot.
     std::unordered_map<u64, std::pair<GPUVAddr, u32>> traced_table_pointers;
     u64 total_used_memory = 0;

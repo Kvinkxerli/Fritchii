@@ -79,7 +79,12 @@ public:
     /// The GPU range [begin, begin + size) the data method sent next may write, as
     /// Upload::State::ProcessData does for a linear upload. False for a block linear upload,
     /// before the front saw an exec and every register the range needs, or for an empty range.
+    /// False for a block linear upload, before the front saw an exec and every register the range
+    /// needs, or for an empty range.
     [[nodiscard]] bool FrontDataRange(GPUVAddr& begin, u64& size) const;
+    [[nodiscard]] const MemoryManager& GetMemoryManager() const noexcept {
+        return upload_state.GetMemoryManager();
+    }
 
 private:
     void ConsumeSinkImpl(Core::System& system) override;

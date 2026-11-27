@@ -578,14 +578,6 @@ void BufferCacheRuntime::TickFrame(Common::SlotVector<Buffer>& slot_buffers) noe
     }
 }
 
-u64 BufferCacheRuntime::CurrentTick() {
-    return clock.Now();
-}
-
-bool BufferCacheRuntime::IsFree(u64 tick) {
-    return clock.IsFree(tick);
-}
-
 void BufferCacheRuntime::Wait(u64 tick) {
     clock.Wait(tick);
 }

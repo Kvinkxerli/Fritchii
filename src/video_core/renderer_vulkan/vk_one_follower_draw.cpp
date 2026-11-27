@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -665,7 +666,16 @@ void OneFollowerDraw::FillHandleValuesKept(Maxwell3D& engine, std::span<const Sh
     FillCuts::ProgramStats& stats = FillCuts::g_program;
     FillCuts::Add(stats.draws);
     FillCuts::MaybeReport();
-    ProgramMemo& memo = program_memos[pipeline];
+    ProgramMemoSlot& cache_slot =
+        program_memo_cache[(reinterpret_cast<std::uintptr_t>(pipeline) >> 6) &
+                           (ProgramMemoCacheSize - 1)];
+    ProgramMemo* memo_ptr =
+        cache_slot.pipeline == pipeline ? cache_slot.memo : nullptr;
+    if (memo_ptr == nullptr) [[unlikely]] {
+        memo_ptr = &program_memos[pipeline];
+        cache_slot = ProgramMemoSlot{pipeline, memo_ptr};
+    }
+    ProgramMemo& memo = *memo_ptr;
     if (memo.hashes != hashes) {
         memo.hashes = hashes;
         memo.records.clear();
