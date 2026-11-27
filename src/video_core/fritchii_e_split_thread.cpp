@@ -148,7 +148,7 @@ void Pause() noexcept {
 }
 
 constexpr u64 Slots = 512;         ///< hand-over ring
-constexpr int MaxDepth = 48;       ///< FRITCHII_ESPLIT_DEPTH's cap (draw tails ahead)
+constexpr int MaxDepth = 64;       ///< FRITCHII_ESPLIT_DEPTH's cap (draw tails ahead)
 constexpr u64 SampleMask = 63;     ///< 1 hand-over in 64 compared (or hashed)
 constexpr size_t HandCount = static_cast<size_t>(Hand::Count);
 constexpr size_t JoinCount = static_cast<size_t>(Join::Count);
@@ -1521,9 +1521,9 @@ void ThreadBatch() noexcept {
     if (!g_thread) {
         return;
     }
-    // Default 36: the queued mode; 0 = S1's lockstep (the check mode).
+    // Default 52: the queued mode; 0 = S1's lockstep (the check mode).
     int depth = VideoCore::Nx2Debug::SwitchValue(VideoCore::Nx2Debug::g_esplit_depth,
-                                                 "FRITCHII_ESPLIT_DEPTH", 36);
+                                                 "FRITCHII_ESPLIT_DEPTH", 52);
     depth = std::clamp(depth, 0, MaxDepth);
     if (depth != g_depth) [[unlikely]] {
         SetDepth(depth);

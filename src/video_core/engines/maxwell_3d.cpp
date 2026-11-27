@@ -5395,8 +5395,27 @@ u32 Maxwell3D::EvaluateE2cMode(GPUVAddr source, u32 p0, u32 front_value, bool ve
     // GpuSplit::Reached) and the reports a posted fence lands on these bytes, so the listing
     // asked below and the words read are R's state at this place. The flushes lend as the
     // front's split.Run closures did.
-    stats.waited += OneF::WaitGuestWriteOps() ? 1 : 0;
     const auto device = memory_manager.GpuToCpuAddress(source);
+    const GPUVAddr check_begin = source >= 12 ? source - 12 : GPUVAddr{0};
+    const GPUVAddr check_last = source + read_bytes - 1;
+    bool waited = false;
+    if (device && (check_begin >> 12) == (check_last >> 12)) {
+        waited = OneF::WaitGuestWriteOpsFor(*device & ~DAddr{0xfff}, 0x1000);
+    } else {
+        const auto dev_begin = memory_manager.GpuToCpuAddress(check_begin);
+        const auto dev_last = memory_manager.GpuToCpuAddress(check_last);
+        if (dev_begin && dev_last) {
+            waited = OneF::WaitGuestWriteOpsFor(*dev_begin & ~DAddr{0xfff}, 0x1000);
+            if ((*dev_last >> 12) != (*dev_begin >> 12)) {
+                const bool second_waited =
+                    OneF::WaitGuestWriteOpsFor(*dev_last & ~DAddr{0xfff}, 0x1000);
+                waited = waited || second_waited;
+            }
+        } else {
+            waited = OneF::WaitGuestWriteOps();
+        }
+    }
+    stats.waited += waited ? 1 : 0;
     if (device && *device >= 12) {
         OneF::BeforeEngineRead(*device - 12, read_bytes + 12);
     }

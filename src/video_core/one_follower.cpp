@@ -140,8 +140,13 @@ struct Impl {
     u64 carried_ops_logged{};
     std::array<u64, 4> carriers_logged{};
     std::array<u64, 3> carried_alone_logged{};
+    static constexpr size_t GuestWritePageSlots = 2048;
+    static constexpr size_t GuestWritePageMask = GuestWritePageSlots - 1;
     /// E only: the packet number of that newest op (WaitGuestWriteOps).
     u64 guest_write_number{};
+    /// E only: newest unscoped/overflowed report op and per-4 KiB page packet watermarks.
+    u64 guest_write_unscoped{};
+    std::array<u64, GuestWritePageSlots> guest_write_page_num{};
     /// Lends E made holding a watched lock (handed to R for the park), the op packets' line.
     std::atomic<u64> lends_holding_lock{};
     u64 lends_holding_lock_logged{};
@@ -401,11 +406,22 @@ static_assert(sizeof(CarryTrailer) == 8);
 /// The most E keeps before it sends them alone: 12 sample reports (16 + 56 bytes each).
 constexpr std::size_t MaxCarryBytes = 1024;
 
+/// Range written by a pushed report op whose landing page WaitGuestWriteOpsFor checks.
+struct GuestWriteRange {
+    u64 address{};
+    u64 size{};
+    bool active{};
+};
+
 /// E only: the ops kept for the next packet.
 struct Carry {
+    static constexpr u32 MaxLandPages = 64;
     alignas(8) std::array<u8, MaxCarryBytes> bytes{};
+    std::array<u64, MaxLandPages> land_pages{};
     u32 used{};
     u32 count{};
+    u32 land_page_count{};
+    bool land_unscoped{};
     /// Ring A position of the oldest kept op: the carrying packet's floor (EngineConsumed's
     /// `positions`), so `played` never passes a kept op before R ran it.
     u64 floor{~u64{0}};
@@ -413,6 +429,63 @@ struct Carry {
     u64 lands{};
 };
 Carry g_carry;
+
+[[nodiscard]] size_t GuestWritePageSlot(u64 page) noexcept {
+    return static_cast<size_t>((page ^ (page >> 11)) & Impl::GuestWritePageMask);
+}
+
+void RecordGuestWriteNumber(u64 number, const GuestWriteRange& range) noexcept {
+    g.guest_write_number = (std::max)(g.guest_write_number, number);
+    if (!range.active) {
+        g.guest_write_unscoped = (std::max)(g.guest_write_unscoped, number);
+        return;
+    }
+    if (range.size == 0) {
+        return;
+    }
+    const u64 first = range.address >> 12;
+    const u64 last = (range.address + range.size - 1) >> 12;
+    if (last - first >= Impl::GuestWritePageSlots) {
+        g.guest_write_unscoped = (std::max)(g.guest_write_unscoped, number);
+        return;
+    }
+    for (u64 page = first; page <= last; ++page) {
+        auto& slot = g.guest_write_page_num[GuestWritePageSlot(page)];
+        slot = (std::max)(slot, number);
+    }
+}
+
+void RecordCarryGuestWriteRange(const GuestWriteRange& range) noexcept {
+    if (!range.active) {
+        g_carry.land_unscoped = true;
+        return;
+    }
+    if (range.size == 0 || g_carry.land_unscoped) {
+        return;
+    }
+    const u64 first = range.address >> 12;
+    const u64 last = (range.address + range.size - 1) >> 12;
+    for (u64 page = first; page <= last; ++page) {
+        if (g_carry.land_page_count != 0 &&
+            g_carry.land_pages[g_carry.land_page_count - 1] == page) {
+            continue;
+        }
+        if (g_carry.land_page_count >= Carry::MaxLandPages) {
+            g_carry.land_unscoped = true;
+            return;
+        }
+        g_carry.land_pages[g_carry.land_page_count++] = page;
+    }
+}
+
+void ResetCarry() noexcept {
+    g_carry.used = 0;
+    g_carry.count = 0;
+    g_carry.floor = ~u64{0};
+    g_carry.lands = 0;
+    g_carry.land_page_count = 0;
+    g_carry.land_unscoped = false;
+}
 
 /// E's packet buffer (fable_b 11.1 item 0): allocated once per thread, written at a cursor, never
 /// resized or cleared on the hot path (the spans' bytes are written before they are sent).
@@ -461,12 +534,16 @@ void CarriedSent(u64 number) {
         g.guest_write_op.store(g_carry.lands, std::memory_order_release);
         // FRITCHII_E2C_ON_E's WaitGuestWriteOps waits for the packet that holds the newest
         // report op: a carried report rides in this one (as PushOp's own mark sets it).
-        g.guest_write_number = number;
+        g.guest_write_number = (std::max)(g.guest_write_number, number);
+        if (g_carry.land_unscoped) {
+            g.guest_write_unscoped = (std::max)(g.guest_write_unscoped, number);
+        }
+        for (u32 i = 0; i < g_carry.land_page_count; ++i) {
+            auto& slot = g.guest_write_page_num[GuestWritePageSlot(g_carry.land_pages[i])];
+            slot = (std::max)(slot, number);
+        }
     }
-    g_carry.used = 0;
-    g_carry.count = 0;
-    g_carry.floor = ~u64{0};
-    g_carry.lands = 0;
+    ResetCarry();
 }
 
 /// R, at the start of a PacketCarried packet (`packet` = its header): the carried ops, in order.
@@ -491,6 +568,8 @@ void RunCarried(const PacketHeader& header, const u8* packet) {
 /// E: the draw the next Lend or PackSpans is for (SetNextDraw), consumed by them.
 thread_local DrawValues t_next_draw{};
 thread_local bool t_next_draw_set{};
+/// E1/E2: the landing range of the next PushOp(..., lands_in_memory=true), consumed by PushOp.
+thread_local GuestWriteRange t_next_guest_write_range{};
 
 /// Applies the nesting: each step needs the one before; a refused switch is logged once per value.
 void Refresh(u32 generation) {
@@ -1780,10 +1859,10 @@ void Start(Core::System& system) {
     g.write = 0;
     g.pushed = 0;
     g.draw_seq = 0;
-    g_carry.used = 0; // E is not running: nothing kept survives a session
-    g_carry.count = 0;
-    g_carry.floor = ~u64{0};
-    g_carry.lands = 0;
+    ResetCarry(); // E is not running: nothing kept survives a session
+    g.guest_write_number = 0;
+    g.guest_write_unscoped = 0;
+    g.guest_write_page_num.fill(0);
     g.sent.store(0, std::memory_order_relaxed);
     g.sent_packets.store(0, std::memory_order_relaxed);
     g.intended.store(0, std::memory_order_relaxed);
@@ -2010,8 +2089,13 @@ void Lend(LentOp op, LentReason reason, void (*function)(void*), void* argument)
     }
 }
 
+void NoteNextGuestWriteRange(u64 address, u64 size) noexcept {
+    t_next_guest_write_range = GuestWriteRange{address, size, true};
+}
+
 void PushOp(LentOp op, void (*function)(void*), const void* payload, u32 size,
             bool lands_in_memory, u8 packet_flags, bool carry) {
+    const GuestWriteRange write_range = std::exchange(t_next_guest_write_range, GuestWriteRange{});
     if (!Detail::t_engine || !g.thread.joinable() || size > MaxPayloadBytes) {
         if (size > MaxPayloadBytes && Detail::t_engine && g.thread.joinable()) [[unlikely]] {
             // An R op run on E: a bug in the op's payload, never silent (its effects are R's).
@@ -2042,6 +2126,7 @@ void PushOp(LentOp op, void (*function)(void*), const void* payload, u32 size,
             u8* buffer;
             const char* trace_site;
             std::size_t body_bytes;
+            GuestWriteRange write_range;
             LentOp op;
             bool lands_in_memory;
         } job{};
@@ -2061,6 +2146,7 @@ void PushOp(LentOp op, void (*function)(void*), const void* payload, u32 size,
         job.buffer = buffer;
         job.trace_site = std::exchange(t_lend_site, nullptr);
         job.body_bytes = spans_bytes + ((size + 7) & ~u32{7});
+        job.write_range = write_range;
         job.op = op;
         job.lands_in_memory = lands_in_memory;
         static_assert(sizeof(QueuedOp) <= ESplit::AsyncPayloadBytes);
@@ -2075,7 +2161,7 @@ void PushOp(LentOp op, void (*function)(void*), const void* payload, u32 size,
             }
             if (q.lands_in_memory) {
                 g.guest_write_op.store(q.header.position + 1, std::memory_order_release);
-                g.guest_write_number = q.header.number;
+                RecordGuestWriteNumber(q.header.number, q.write_range);
             }
         });
         return;
@@ -2103,6 +2189,7 @@ void PushOp(LentOp op, void (*function)(void*), const void* payload, u32 size,
         g_carry.floor = (std::min)(g_carry.floor, position);
         if (lands_in_memory) {
             g_carry.lands = position + 1;
+            RecordCarryGuestWriteRange(write_range);
         }
         t_lend_site = nullptr;
         return;
@@ -2132,21 +2219,45 @@ void PushOp(LentOp op, void (*function)(void*), const void* payload, u32 size,
         // Before E's next `consumed` store (seq_cst there): a front that sees E past this entry
         // sees this mark too.
         g.guest_write_op.store(header.position + 1, std::memory_order_release);
-        g.guest_write_number = header.number;
+        RecordGuestWriteNumber(header.number, write_range);
     }
 }
 
-bool WaitGuestWriteOps() noexcept {
-    if (!Detail::t_engine) {
-        return false;
-    }
-    const u64 number = g.guest_write_number;
+namespace {
+bool WaitForGuestWritePacket(u64 number) noexcept {
     if (number == 0 || g.played.load(std::memory_order_acquire) >= number) {
         return false;
     }
     EngineWait([&] { return g.played.load(std::memory_order_acquire) >= number; }, EWait::Drain,
                number);
     return true;
+}
+} // Anonymous namespace
+
+bool WaitGuestWriteOps() noexcept {
+    if (!Detail::t_engine) {
+        return false;
+    }
+    return WaitForGuestWritePacket(g.guest_write_number);
+}
+
+bool WaitGuestWriteOpsFor(u64 address, u64 size) noexcept {
+    if (!Detail::t_engine) {
+        return false;
+    }
+    u64 number = g.guest_write_unscoped;
+    if (size != 0) {
+        const u64 first = address >> 12;
+        const u64 last = (address + size - 1) >> 12;
+        if (last - first >= Impl::GuestWritePageSlots) {
+            number = g.guest_write_number;
+        } else {
+            for (u64 page = first; page <= last; ++page) {
+                number = (std::max)(number, g.guest_write_page_num[GuestWritePageSlot(page)]);
+            }
+        }
+    }
+    return WaitForGuestWritePacket(number);
 }
 
 bool WaitsE() noexcept {

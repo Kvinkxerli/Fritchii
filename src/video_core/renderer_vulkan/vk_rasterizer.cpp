@@ -6770,6 +6770,7 @@ void RasterizerVulkan::Query(GPUVAddr gpu_addr, VideoCommon::QueryType type,
                 static_assert(sizeof(Op) <= OneF::MaxOpPayloadBytes,
                               "an op over the payload limit");
                 OneF::SetLendSite("payload release (written on R, SIGNAL_ON_R)");
+                OneF::NoteNextGuestWriteRange(*device, 16);
                 OneF::PushOp(
                     OneF::LentOp::Query,
                     [](void* raw) {
@@ -6872,6 +6873,9 @@ void RasterizerVulkan::Query(GPUVAddr gpu_addr, VideoCommon::QueryType type,
                                    ? (onef_samples_started ? 2 : 1)
                                    : 0)};
                 OneF::SetLendSite("Query (posted)");
+                if (device) {
+                    OneF::NoteNextGuestWriteRange(*device, 16);
+                }
                 OneF::PushOp(
                     OneF::LentOp::Query,
                     [](void* raw) {

@@ -926,6 +926,12 @@ void NoteSkippedSamplesDraw() noexcept;
 /// such op, the rule the front's E-position waits use (GpuSplit::Reached). True when it waited.
 /// Not on E (one follower off, the single back): false at once, nothing to wait for.
 bool WaitGuestWriteOps() noexcept;
+/// Notes the physical range [address, address + size) written by the next PushOp(...,
+/// lands_in_memory=true) call on this thread, so WaitGuestWriteOpsFor can skip unrelated ops.
+void NoteNextGuestWriteRange(u64 address, u64 size) noexcept;
+/// Page-scoped variant of WaitGuestWriteOps: waits only for report ops that may land on
+/// [address, address + size) (plus any unscoped or overflowed report ops).
+bool WaitGuestWriteOpsFor(u64 address, u64 size) noexcept;
 
 /// FRITCHII_ONEF_INVAL_E (live; fable_b 11.1 item 2; needs FRITCHII_ONEF_E_PIPELINE=1 and step
 /// 4): E runs the draw's invalidation (the buffer half) itself when no range touches a page an
