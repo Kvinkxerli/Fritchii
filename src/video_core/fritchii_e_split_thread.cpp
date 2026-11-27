@@ -124,6 +124,9 @@ struct ESplitEngineAccess {
                                   const u64* entry) {
         return split.ExecuteOnEngine(engine, entry);
     }
+    static void StoreConsumed(GpuSplit& split, u64 position) {
+        split.StoreConsumed(position);
+    }
 };
 } // namespace VideoCommon
 
@@ -707,7 +710,7 @@ void RunJob(Job& job) {
         ThreadCbAdvance(words);
     }
     if (job.store_position != 0) [[unlikely]] {
-        GpuSplit::Get().StoreConsumed(job.store_position);
+        ESplitEngineAccess::StoreConsumed(GpuSplit::Get(), job.store_position);
     }
     // Lockstep: the state goes back to E1 with the job. Async: E1 moved on; E2's copy is dropped
     // (the next job installs its own).
@@ -1115,7 +1118,8 @@ void WaitDrained() {
     PostPendingBatches(); // S4: any open record/batch first, so "drained" includes it
     WaitDone(g_next_seq - 1);
     if (g_pending_store_position != 0) {
-        GpuSplit::Get().StoreConsumed(std::exchange(g_pending_store_position, 0));
+        ESplitEngineAccess::StoreConsumed(GpuSplit::Get(),
+                                          std::exchange(g_pending_store_position, 0));
     }
 }
 
@@ -2479,7 +2483,7 @@ void QueueEngineEntry(VideoCommon::GpuSplit& split, Tegra::Engines::EngineInterf
 
 void QueueStore(u64 position, bool urgent) noexcept {
     if (!g_async || t_role != 1 || t_join != 0) {
-        GpuSplit::Get().StoreConsumed(position);
+        ESplitEngineAccess::StoreConsumed(GpuSplit::Get(), position);
         return;
     }
     if (Job* const open = CurrentOpenJob()) {
@@ -2510,13 +2514,13 @@ void QueueStore(u64 position, bool urgent) noexcept {
             PostAsync([](void* raw) {
                 StoreZero s{};
                 std::memcpy(&s, raw, sizeof(s));
-                s.self->StoreConsumed(s.position);
+                ESplitEngineAccess::StoreConsumed(*s.self, s.position);
             });
         } else {
             PostAsync(nullptr);
         }
     } else {
-        GpuSplit::Get().StoreConsumed(position);
+        ESplitEngineAccess::StoreConsumed(GpuSplit::Get(), position);
     }
 }
 
