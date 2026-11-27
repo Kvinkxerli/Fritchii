@@ -392,7 +392,7 @@ constexpr std::pair<const char*, const char*> BuiltinSwitches[] = {
     {"FRITCHII_TC_COLLECT_OVER", "1"},
     {"FRITCHII_SWEEP_SUPERSEDED", "3"},
     {"FRITCHII_OCCL_LEAN", "1"},
-    {"FRITCHII_BIND_SKIP", "0"},
+    {"FRITCHII_BIND_SKIP", "2"}, // build-59: ESplitBindDrop==0, safe to skip unchanged uniform binds
     {"EDEN_NX2_EXP18", "7"},
     {"EDEN_NX2_EXP62", "1"},
     {"FRITCHII_STEP_LEAN", "1"},
@@ -404,15 +404,15 @@ constexpr std::pair<const char*, const char*> BuiltinSwitches[] = {
     {"FRITCHII_FILL_UPDATE_KEEP", "1"},
     {"FRITCHII_HANDLE_PROG_KEEP", "1"},
     {"FRITCHII_FILL_BRACKET_LEAN", "1"},  {"FRITCHII_ONEF_MESH_EMU_ASYNC", "1"},
-    {"FRITCHII_ESPLIT", "1"},             {"FRITCHII_ESPLIT_PIN", "1"},
+    {"FRITCHII_ESPLIT", "1"},             {"FRITCHII_ESPLIT_PIN", "2"},
     {"FRITCHII_ESPLIT_FLUSH_ASYNC", "1"}, {"FRITCHII_ESPLIT_BIND_BATCH", "1"},  {"FRITCHII_E2C_ON_E", "1"},
-    {"FRITCHII_ASTC_HELD_DEFER", "1"},    {"FRITCHII_ONEF_R_SPIN", "512"},
-    {"FRITCHII_ONEF_E_SPIN", "512"},
+    {"FRITCHII_ASTC_HELD_DEFER", "1"},    {"FRITCHII_ONEF_R_SPIN", "1024"},
+    {"FRITCHII_ONEF_E_SPIN", "1024"},
 #ifdef _WIN32
     // Tested on Windows only (the Linux test builds ran without them).
     {"FRITCHII_JIT_PIN", "1"},            {"FRITCHII_JIT_PIN_REGS", "x8,x0"},
     {"FRITCHII_ONEF_PIN", "2"},           {"FRITCHII_GPU_PRIORITY", "2"},
-    {"FRITCHII_THREAD_QOS", "1"},         {"EDEN_HYBRID_CORES", "4"},         {"FRITCHII_ZERO_TRIM_BATCH", "1"},
+    {"FRITCHII_THREAD_QOS", "1"},         {"EDEN_HYBRID_CORES", "5"},         {"FRITCHII_ZERO_TRIM_BATCH", "1"},
     {"FRITCHII_ZERO_TRIM_CHUNK", "1"},    {"FRITCHII_ZERO_UPLOAD", "0"},
     {"FRITCHII_REPORT_WAIT", "1"},        {"FRITCHII_FENCE_COPY_UNLOCKED", "1"},
 #endif
