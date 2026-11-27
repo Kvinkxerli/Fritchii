@@ -129,6 +129,8 @@ if (MSVC AND NOT CXX_CLANG)
         /wd4702 # unreachable code (when used with LTO)
 
         $<$<CONFIG:Release>:/GS->   # No stack buffer overflow checks
+        $<$<CONFIG:Release>:/Ob3>   # Aggressive inline expansion for hot template paths
+        $<$<CONFIG:Release>:/Gw>    # Package global data for /OPT:REF,ICF
         /Gy                         # Enable function level linking
         /GR                         # Enable RTTI for dynamic_cast in video_core split/memstage
     )
@@ -142,7 +144,10 @@ if (MSVC AND NOT CXX_CLANG)
     endif()
 
     if (ARCHITECTURE_x86_64)
-        add_compile_options(/QIntel-jcc-erratum)
+        add_compile_options(
+            /QIntel-jcc-erratum
+            $<$<CONFIG:Release>:/arch:AVX2>
+        )
     endif()
 
     set(CMAKE_EXE_LINKER_FLAGS_DEBUG   "/DEBUG /MANIFEST:NO" CACHE STRING "" FORCE)

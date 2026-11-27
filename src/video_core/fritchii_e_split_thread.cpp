@@ -173,7 +173,7 @@ constexpr std::array<const char*, CbJoinCount> CbJoinNames{
 /// A record's room for constant buffer writes (each a CbSegment and its words).
 constexpr size_t CbRoom = 4096;
 /// What a record segment is (its first byte).
-enum SegmentKind : u8 { SegmentCbWrite = 0, SegmentBind = 1 };
+enum SegmentKind : u8 { SegmentCbWrite = 0, SegmentBind = 1, SegmentRaster = 2 };
 struct CbSegment {
     u8 kind; ///< SegmentCbWrite
     u8 block;
@@ -439,13 +439,15 @@ struct Raster {
     u32 a, b, c, d;
     RasterOp op;
 };
-constexpr u32 MaxRasterBatch = 4;
-struct RasterBatch {
-    u32 count;
-    u32 pad;
-    std::array<Raster, MaxRasterBatch> ops;
+struct RasterSegment {
+    u8 kind; ///< SegmentRaster
+    RasterOp op;
+    u8 pad[6];
+    VideoCore::RasterizerInterface* rasterizer;
+    u64 address;
+    u32 a, b, c, d;
 };
-static_assert(sizeof(RasterBatch) <= AsyncPayloadBytes && std::is_trivially_copyable_v<RasterBatch>);
+static_assert(sizeof(RasterSegment) % 8 == 0 && std::is_trivially_copyable_v<RasterSegment>);
 constexpr u32 MaxEngineBatch = 64;
 struct EngineBatch {
     GpuSplit* self;
@@ -460,9 +462,6 @@ Tegra::Engines::EngineInterface* g_eng_engine{};
 const u64* g_eng_start{};
 const u64* g_eng_end{};
 u32 g_eng_count{};
-Job* g_raster_open{};
-u32 g_raster_count{};
-std::array<Raster, MaxRasterBatch> g_raster_ops{};
 u64 g_pending_store_position{};
 [[nodiscard]] Job* CurrentOpenJob() noexcept {
     if (g_cb_open != nullptr) {
@@ -471,13 +470,9 @@ u64 g_pending_store_position{};
     if (g_eng_open != nullptr) {
         return g_eng_open;
     }
-    if (g_raster_open != nullptr) {
-        return g_raster_open;
-    }
     return g_open;
 }
 void PostEngineBatch() noexcept;
-void PostRasterBatch() noexcept;
 void PostPendingBatches() noexcept;
 std::chrono::nanoseconds g_e1_poll{std::chrono::microseconds{10}};
 std::chrono::nanoseconds g_hold_poll{std::chrono::microseconds{4}};
@@ -821,6 +816,15 @@ void RunCbRecord(void* raw) {
             at += sizeof(BindSegment);
             continue;
         }
+        if (*at == SegmentRaster) {
+            t_async_cb = false;
+            RasterSegment rs;
+            std::memcpy(&rs, at, sizeof(rs));
+            ExecuteRasterOp(Raster{rs.rasterizer, rs.address, rs.a, rs.b, rs.c, rs.d, rs.op});
+            at += sizeof(RasterSegment);
+            t_async_cb = true;
+            continue;
+        }
         CbSegment segment;
         std::memcpy(&segment, at, sizeof(segment));
         const auto* const values = reinterpret_cast<const u32*>(at + sizeof(CbSegment));
@@ -1048,14 +1052,6 @@ void ExecuteRasterOp(const Raster& r) {
     }
 }
 
-void RunRasterBatch(void* raw) {
-    RasterBatch b;
-    std::memcpy(&b, raw, sizeof(b));
-    for (u32 i = 0; i < b.count; ++i) {
-        ExecuteRasterOp(b.ops[i]);
-    }
-}
-
 void RunEngineBatch(void* raw) {
     EngineBatch b;
     std::memcpy(&b, raw, sizeof(b));
@@ -1086,28 +1082,9 @@ void PostEngineBatch() noexcept {
     Publish(job.seq);
 }
 
-void PostRasterBatch() noexcept {
-    if (g_raster_open == nullptr) {
-        return;
-    }
-    Job& job = *std::exchange(g_raster_open, nullptr);
-    RasterBatch batch{};
-    batch.count = std::exchange(g_raster_count, 0);
-    for (u32 i = 0; i < batch.count; ++i) {
-        batch.ops[i] = g_raster_ops[i];
-    }
-    std::memcpy(job.payload.data(), &batch, sizeof(batch));
-    job.function = &RunRasterBatch;
-    job.argument = job.payload.data();
-    job.tls = OneF::EngineTls{};
-    job.tls.query_kind = OneF::QueryKind::Count;
-    Publish(job.seq);
-}
-
 void PostPendingBatches() noexcept {
     PostCbWrites();
     PostEngineBatch();
-    PostRasterBatch();
 }
 
 void WaitDone(u64 seq) {
@@ -1816,22 +1793,27 @@ void QueueRasterOpImpl(RasterOp op, VideoCore::RasterizerInterface& rasterizer, 
         ExecuteRasterOp(raster);
         return;
     }
-    if (g_raster_open != nullptr && g_raster_count < MaxRasterBatch) {
-        g_raster_ops[g_raster_count++] = raster;
-        if (g_raster_count == MaxRasterBatch) {
-            PostRasterBatch();
-        }
-        return;
+    constexpr u32 need = static_cast<u32>(sizeof(RasterSegment));
+    if (g_cb_open != nullptr && g_cb_used + need > CbRoom) {
+        PostCbWrites();
     }
-    if (g_raster_open != nullptr) {
-        PostRasterBatch();
+    if (g_cb_open == nullptr) {
+        OpenRecord(nullptr);
     }
-    Job& job = TakeSlot(false);
-    job.async = true;
-    job.info = HandInfo{.hand = Hand::Raster};
-    g_raster_open = &job;
-    g_raster_ops[0] = raster;
-    g_raster_count = 1;
+    const RasterSegment segment{
+        .kind = SegmentRaster,
+        .op = raster.op,
+        .pad = {},
+        .rasterizer = raster.rasterizer,
+        .address = raster.address,
+        .a = raster.a,
+        .b = raster.b,
+        .c = raster.c,
+        .d = raster.d,
+    };
+    std::memcpy(g.buffers[g_cb_open->seq % Slots].cb.get() + g_cb_used, &segment, need);
+    g_cb_used += need;
+    ++g_cb_segments;
     ++g_e1.hands[static_cast<size_t>(Hand::Raster)];
 }
 

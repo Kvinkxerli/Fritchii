@@ -404,8 +404,8 @@ constexpr std::pair<const char*, const char*> BuiltinSwitches[] = {
     {"FRITCHII_FILL_UPDATE_KEEP", "1"},
     {"FRITCHII_HANDLE_PROG_KEEP", "1"},
     {"FRITCHII_FILL_BRACKET_LEAN", "1"},  {"FRITCHII_ONEF_MESH_EMU_ASYNC", "1"},
-    {"FRITCHII_ESPLIT", "1"},             {"FRITCHII_ESPLIT_FLUSH_ASYNC", "1"},
-    {"FRITCHII_ESPLIT_BIND_BATCH", "1"},  {"FRITCHII_E2C_ON_E", "1"},
+    {"FRITCHII_ESPLIT", "1"},             {"FRITCHII_ESPLIT_PIN", "1"},
+    {"FRITCHII_ESPLIT_FLUSH_ASYNC", "1"}, {"FRITCHII_ESPLIT_BIND_BATCH", "1"},  {"FRITCHII_E2C_ON_E", "1"},
     {"FRITCHII_ASTC_HELD_DEFER", "1"},    {"FRITCHII_ONEF_R_SPIN", "512"},
     {"FRITCHII_ONEF_E_SPIN", "512"},
 #ifdef _WIN32

@@ -1180,7 +1180,7 @@ struct Memory::Impl {
             u64 block{~u64{0}};
             u64 epoch{};
         };
-        static constexpr size_t Slots = 8;
+        static constexpr size_t Slots = 32;
         std::array<Entry, Slots> entries{};
         std::atomic<u64> stores{};       ///< trapped stores looked at (each device address)
         std::atomic<u64> hits{};         ///< of them the memo serves (=1: would serve)
