@@ -803,6 +803,9 @@ void RunBindSegment(const u8* at) {
     t_async_cb = true;
 }
 
+void ExecuteRasterOp(const Raster& r);
+void OpenRecord(Maxwell3D* engine);
+
 /// E2, S4: a constant buffer record, its writes (and FRITCHII_ESPLIT_BIND_BATCH's binds) in E1's
 /// order.
 void RunCbRecord(void* raw) {
