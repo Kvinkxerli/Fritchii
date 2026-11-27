@@ -147,7 +147,7 @@ void Pause() noexcept {
 #endif
 }
 
-constexpr u64 Slots = 256;         ///< hand-over ring
+constexpr u64 Slots = 512;         ///< hand-over ring
 constexpr int MaxDepth = 48;       ///< FRITCHII_ESPLIT_DEPTH's cap (draw tails ahead)
 constexpr u64 SampleMask = 63;     ///< 1 hand-over in 64 compared (or hashed)
 constexpr size_t HandCount = static_cast<size_t>(Hand::Count);

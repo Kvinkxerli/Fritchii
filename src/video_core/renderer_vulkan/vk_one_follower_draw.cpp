@@ -384,7 +384,8 @@ OneF::LentReason OneFollowerDraw::UnlentBlocker(Maxwell3D& engine, bool is_index
             const bool shader_pending = e_split_async && VideoCommon::ESplit::ShaderPending();
             constexpr size_t code_bytes =
                 sizeof(u32) * VideoCommon::NativeIndirectReset::Program.size();
-            ResetCacheEntry& cached = reset_cache[(program >> 4) & (ResetCacheSize - 1)];
+            ResetCacheEntry& cached =
+                reset_cache[((program >> 7) ^ (program >> 14)) & (ResetCacheSize - 1)];
             const bool hit = e_split_async && !shader_pending && cached.valid &&
                              cached.program == program && cached.map_serial == map_serial &&
                              cached.as_id == as_id && cached.inval_epoch == shader_epoch &&

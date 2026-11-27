@@ -12,6 +12,10 @@
 #include <memory>
 #include <utility>
 
+#if defined(_M_X64) || defined(__x86_64__)
+#include <immintrin.h>
+#endif
+
 #include "common/assert.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
@@ -300,7 +304,7 @@ struct GPU::Impl {
     [[nodiscard]] u64 RequestSyncOperation(Func&& action) {
         std::unique_lock lck{sync_request_mutex};
         const u64 fence = ++last_sync_fence;
-        if (sync_requests_dropped) {
+        if (sync_requests_dropped.load(std::memory_order_acquire)) {
             // The GPU threads stopped (NotifyShutdown): nothing runs it, and its waiter returns at
             // once. Not queued, so a stray TickWork can't run it after its waiter's frame is gone.
             return fence;
@@ -312,15 +316,31 @@ struct GPU::Impl {
 
     /// Obtains current flush request fence id.
     [[nodiscard]] u64 CurrentSyncRequestFence() const {
-        return current_sync_fence.load(std::memory_order_relaxed);
+        return current_sync_fence.load(std::memory_order_acquire);
     }
 
     /// Returns once the request of `fence` ran, or once the GPU threads stopped for good
     /// (NotifyShutdown): then it never runs.
     void WaitForSyncOperation(const u64 fence) {
+        if (CurrentSyncRequestFence() >= fence ||
+            sync_requests_dropped.load(std::memory_order_acquire)) {
+            return;
+        }
+        for (int i = 0; i < 200; ++i) {
+#if defined(_M_X64) || defined(__x86_64__)
+            _mm_pause();
+#else
+            std::this_thread::yield();
+#endif
+            if (CurrentSyncRequestFence() >= fence ||
+                sync_requests_dropped.load(std::memory_order_acquire)) {
+                return;
+            }
+        }
         std::unique_lock lck{sync_request_mutex};
         sync_request_cv.wait(lck, [this, fence] {
-            return CurrentSyncRequestFence() >= fence || sync_requests_dropped;
+            return CurrentSyncRequestFence() >= fence ||
+                   sync_requests_dropped.load(std::memory_order_acquire);
         });
     }
 
@@ -388,7 +408,7 @@ struct GPU::Impl {
             std::scoped_lock requests_lock{sync_request_mutex};
             sync_requests.clear();
             has_sync_requests.store(false, std::memory_order_relaxed);
-            sync_requests_dropped = true;
+            sync_requests_dropped.store(true, std::memory_order_release);
         }
         sync_request_cv.notify_all();
         std::unique_lock lk{sync_mutex};
@@ -682,7 +702,7 @@ struct GPU::Impl {
     std::vector<const std::vector<std::pair<DAddr, u64>>*> applying_writes;
     std::mutex applying_writes_mutex;
     /// The GPU threads stopped and the requests were dropped (NotifyShutdown, under the mutex).
-    bool sync_requests_dropped{};
+    std::atomic<bool> sync_requests_dropped{};
 
     const bool is_async;
 

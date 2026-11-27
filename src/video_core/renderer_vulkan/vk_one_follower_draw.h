@@ -292,7 +292,7 @@ private:
         bool valid{};
         bool result{};
     };
-    static constexpr size_t ResetCacheSize = 16;
+    static constexpr size_t ResetCacheSize = 128;
     std::array<ResetCacheEntry, ResetCacheSize> reset_cache{};
 
     /// Diagnostics that read the draw on R (frame dump, render trace, flash watch): set by R.

@@ -5291,10 +5291,11 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
                 return work.size;
             }
             if (info.cls == ESplit::Class::Join && ESplit::g_async) {
+                const ESplit::EngineKind join_ek = ESplit::KindOf(back_engine);
                 if (info.channel) {
                     compute_upload.Reset();
                     other_upload.ResetAll();
-                } else {
+                } else if (join_ek == ESplit::EngineKind::Compute) {
                     compute_upload.Reset();
                 }
                 // The queued mode's join entries by kind (the 10 s line's top 8).

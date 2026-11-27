@@ -1038,16 +1038,12 @@ void BufferCache<P>::RecordReadDownload(std::span<const std::pair<DAddr, u64>> r
         if (side_copy && side_mode == 2) {
             verify_staging = runtime.DownloadStagingBuffer(total_size_bytes, true);
         }
+        std::ranges::stable_sort(copies, {}, &Copy::buffer_id);
         for (Copy& entry : copies) {
             Buffer& buffer = slot_buffers[entry.buffer_id];
             const u64 relative_dst = entry.copy.dst_offset;
             entry.copy.dst_offset += staging.offset;
             buffer.MarkUsage(entry.copy.src_offset, entry.copy.size);
-            if (main_copy) {
-                // Mapped buffers too: the GPU thread's later work may write them before the
-                // copy is read.
-                runtime.CopyBuffer(staging.buffer, buffer, std::span{&entry.copy, 1}, true);
-            }
             if (side_copy) {
                 const Async_Buffer& target = verify_staging ? *verify_staging : staging;
                 side_regions.push_back({
@@ -1064,15 +1060,29 @@ void BufferCache<P>::RecordReadDownload(std::span<const std::pair<DAddr, u64>> r
                 .size = entry.copy.size,
             });
         }
+        const auto copy_batched = [&](const Async_Buffer& dst_staging) {
+            boost::container::small_vector<BufferCopy, 16> buffer_copies;
+            for (size_t i = 0; i < copies.size();) {
+                const BufferId buffer_id = copies[i].buffer_id;
+                Buffer& buffer = slot_buffers[buffer_id];
+                buffer_copies.clear();
+                while (i < copies.size() && copies[i].buffer_id == buffer_id) {
+                    buffer_copies.push_back(copies[i++].copy);
+                }
+                // Mapped buffers too: the GPU thread's later work may write them before the
+                // copy is read.
+                runtime.CopyBuffer(dst_staging.buffer, buffer, buffer_copies, true);
+            }
+        };
+        if (main_copy) {
+            copy_batched(staging);
+        }
         download.staging = staging;
         if (side_copy) {
             download.side_value = runtime.SideCopy(download.side_tick, side_regions);
             if (download.side_value == 0 && !main_copy) {
                 // The side submit failed: the main copies after all.
-                for (const Copy& entry : copies) {
-                    runtime.CopyBuffer(staging.buffer, slot_buffers[entry.buffer_id],
-                                       std::span{&entry.copy, 1}, true);
-                }
+                copy_batched(staging);
             }
             if (verify_staging) {
                 if (download.side_value != 0) {
@@ -1377,11 +1387,19 @@ void BufferCache<P>::DownloadRangesMemory(std::span<const std::pair<DAddr, u64>>
         return;
     }
     auto download_staging = runtime.DownloadStagingBuffer(total_size_bytes);
-    for (Download& download : downloads) {
-        download.copy.dst_offset += download_staging.offset;
-        Buffer& buffer = slot_buffers[download.buffer_id];
-        buffer.MarkUsage(download.copy.src_offset, download.copy.size);
-        runtime.CopyBuffer(download_staging.buffer, buffer, std::span{&download.copy, 1}, true);
+    std::ranges::stable_sort(downloads, {}, &Download::buffer_id);
+    boost::container::small_vector<BufferCopy, 16> buffer_copies;
+    for (size_t i = 0; i < downloads.size();) {
+        const BufferId buffer_id = downloads[i].buffer_id;
+        Buffer& buffer = slot_buffers[buffer_id];
+        buffer_copies.clear();
+        while (i < downloads.size() && downloads[i].buffer_id == buffer_id) {
+            Download& download = downloads[i++];
+            download.copy.dst_offset += download_staging.offset;
+            buffer.MarkUsage(download.copy.src_offset, download.copy.size);
+            buffer_copies.push_back(download.copy);
+        }
+        runtime.CopyBuffer(download_staging.buffer, buffer, buffer_copies, true);
     }
     runtime.Finish();
     const u8* const mapped_memory = download_staging.mapped_span.data();
@@ -9276,11 +9294,19 @@ void BufferCache<P>::DownloadBuffersMemory(std::span<const BufferId> buffer_ids)
         return;
     }
     auto download_staging = runtime.DownloadStagingBuffer(total_size_bytes);
-    for (Download& download : downloads) {
-        download.copy.dst_offset += download_staging.offset;
-        Buffer& buffer = slot_buffers[download.buffer_id];
-        buffer.MarkUsage(download.copy.src_offset, download.copy.size);
-        runtime.CopyBuffer(download_staging.buffer, buffer, std::span{&download.copy, 1}, true);
+    std::ranges::stable_sort(downloads, {}, &Download::buffer_id);
+    boost::container::small_vector<BufferCopy, 16> buffer_copies;
+    for (size_t i = 0; i < downloads.size();) {
+        const BufferId buffer_id = downloads[i].buffer_id;
+        Buffer& buffer = slot_buffers[buffer_id];
+        buffer_copies.clear();
+        while (i < downloads.size() && downloads[i].buffer_id == buffer_id) {
+            Download& download = downloads[i++];
+            download.copy.dst_offset += download_staging.offset;
+            buffer.MarkUsage(download.copy.src_offset, download.copy.size);
+            buffer_copies.push_back(download.copy);
+        }
+        runtime.CopyBuffer(download_staging.buffer, buffer, buffer_copies, true);
     }
     runtime.Finish();
     const u8* const mapped_memory = download_staging.mapped_span.data();

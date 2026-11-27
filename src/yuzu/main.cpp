@@ -322,6 +322,7 @@ constexpr std::pair<const char*, const char*> BuiltinSwitches[] = {
     {"FRITCHII_STORE_MEMO", "2"},
     // GPU front and back
     {"EDEN_NX2_EXP37", "1"},
+    {"EDEN_NX2_EXP29", "7"},
     {"EDEN_NX2_EXP103", "64"},
     {"EDEN_NX2_EXP123", "3"},
     {"EDEN_NX2_LIGHT_TABLE_ARRAYS", "1"},

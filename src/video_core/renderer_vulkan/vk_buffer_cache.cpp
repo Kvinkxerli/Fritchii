@@ -871,15 +871,27 @@ void BufferCacheRuntime::NoteHeldBuffers(u64 newly_held) {
 // stamp is a packet number, free once the GPU thread played that packet and its tick completed,
 // so a range a packet the GPU thread has not played yet uses still counts as used, and the
 // upload is not moved ahead of that use (spec 7.2, the third user that needs more than a swap).
-bool BufferCacheRuntime::CanReorderUpload(const Buffer& buffer,
+bool BufferCacheRuntime::CanReorderUpload(Buffer& buffer,
                                           std::span<const VideoCommon::BufferCopy> copies) {
     if (Settings::values.disable_buffer_reorder) {
         return false;
     }
-    const bool can_use_upload_cmdbuf =
+    bool can_use_upload_cmdbuf =
         std::ranges::all_of(copies, [&](const VideoCommon::BufferCopy& copy) {
             return !buffer.IsRegionUsed(copy.dst_offset, copy.size);
         });
+    if (!can_use_upload_cmdbuf) {
+        // Only work whose packet and GPU submission have finished used the buffer: nothing in
+        // flight reads the regions, so the upload can stay in UploadAhead instead of breaking
+        // the open render pass. clock.IsFree() is safe from both R and E2 (SeamTicks).
+        const u64 last_tick = buffer.LastUsageTick();
+        can_use_upload_cmdbuf = last_tick != 0 && clock.IsFree(last_tick);
+    }
+    // Stamp the uploaded regions regardless of path so later uploads in the same frame stay
+    // ordered behind this one.
+    for (const VideoCommon::BufferCopy& copy : copies) {
+        buffer.MarkUsage(copy.dst_offset, copy.size);
+    }
     return can_use_upload_cmdbuf;
 }
 
